@@ -61,18 +61,35 @@ jobs:
         run: |
           set -e
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEY_ALIAS" ]; then
-            echo "signing: no secrets — unsigned/debug"
+            echo "signing: secrets empty → build WITHOUT release signing"
             exit 0
           fi
+
           echo "$KEYSTORE_BASE64" | base64 -d > android/app/jetconfig-release.jks
+          if [ ! -s android/app/jetconfig-release.jks ]; then
+            echo "signing: base64 decode empty → skip signing"
+            rm -f android/app/jetconfig-release.jks
+            exit 0
+          fi
+
+          # تست باز شدن keystore قبل از بیلد
+          if ! keytool -list -keystore android/app/jetconfig-release.jks \
+              -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/tmp/kt.out 2>/tmp/kt.err; then
+            echo "signing: KEYSTORE/PASSWORD/ALIAS invalid → skip signing (build continues unsigned)"
+            echo "--- keytool stderr ---"
+            cat /tmp/kt.err || true
+            rm -f android/app/jetconfig-release.jks
+            exit 0
+          fi
+
           printf '%s\n' \
             "storePassword=$STORE_PASSWORD" \
             "keyPassword=$KEY_PASSWORD" \
             "keyAlias=$KEY_ALIAS" \
             "storeFile=jetconfig-release.jks" \
             > android/key.properties
-          echo "signing: keystore + key.properties ready"
           python3 patch_signing.py
+          echo "signing: OK — release will be signed"
 
       - name: Flutter pub get
         run: flutter pub get
