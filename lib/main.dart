@@ -11,12 +11,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.5';
+const String kAppVersion = 'tv-1.0.7';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 105;
+const int kVersionCode = 107;
 
 // رنگ‌های برند جت
 const Color kBg = Color(0xFF0A0E1A);
@@ -112,6 +112,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   TvPhase _phase = TvPhase.idle;
   String _statusLine = 'آماده اتصال';
+  String _quotaLine = '';
   int _activePing = -1;
   bool _userWantsOn = false;
   bool _verified = false;
@@ -222,50 +223,35 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       return;
     }
 
-    if (st == 'CONNECTED' && prev != 'CONNECTED') {
+    if (st.contains('CONNECT') && !prev.contains('CONNECT')) {
       _verifyTunnel();
     }
   }
 
   Future<void> _verifyTunnel() async {
+    // روی تی‌وی: به محض CONNECTED از هسته، اتصال را موفق می‌دانیم
+    // (پینگ تأخیر فقط برای نمایش است؛ اگر شکست بخورد اتصال را قطع نمی‌کنیم)
+    if (!mounted || !_userWantsOn) return;
+    setState(() {
+      _verified = true;
+      _phase = TvPhase.connected;
+      _statusLine = 'متصل هستید';
+    });
+    _spin.duration = const Duration(seconds: 8);
+    if (!_spin.isAnimating) _spin.repeat();
+
     try {
       final d = await _v2ray
           .getConnectedServerDelay(url: kPingUrl)
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 8));
       if (!mounted) return;
-      if (d >= 0 && d < 15000) {
+      if (d >= 0 && d < 20000) {
         setState(() {
-          _verified = true;
           _activePing = d;
-          _phase = TvPhase.connected;
-          _statusLine = 'متصل هستید';
+          _statusLine = 'متصل هستید · $d ms';
         });
-        _spin.repeat(); // چرخش آرام بعد از اتصال
-        _spin.duration = const Duration(seconds: 8);
-        return;
       }
     } catch (_) {}
-    if (!mounted) return;
-    // اگر هسته CONNECTED داد ولی delay نگرفت، باز هم وصل در نظر بگیر (مثل بعضی باکس‌ها)
-    final st = (_coreState ?? '').toUpperCase();
-    if (st == 'CONNECTED' && _userWantsOn) {
-      setState(() {
-        _verified = true;
-        _phase = TvPhase.connected;
-        _statusLine = 'متصل هستید';
-      });
-      _spin.duration = const Duration(seconds: 8);
-      _spin.repeat();
-      return;
-    }
-    if (_userWantsOn) {
-      setState(() {
-        _verified = false;
-        _phase = TvPhase.recovering;
-        _statusLine = 'این سرور پایدار نبود — امتحان سرور بعدی';
-      });
-      _scheduleRecover('verify_fail');
-    }
   }
 
   void _scheduleRecover(String reason) {
@@ -546,10 +532,11 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       final urls = data['urls'];
       String apk = '';
       if (urls is Map) {
-        apk = '${urls['arm64'] ?? urls['universal'] ?? ''}';
+        // روی بیشتر تی‌وی‌های ۳۲بیت، arm32 اولویت دارد
+        apk = '${urls['arm32'] ?? urls['armeabi-v7a'] ?? urls['arm64'] ?? urls['universal'] ?? ''}';
       }
       if (apk.isEmpty) {
-        apk = '${data['apk_arm64'] ?? data['apk'] ?? ''}';
+        apk = '${data['apk_arm32'] ?? data['apk_arm64'] ?? data['apk'] ?? ''}';
       }
       if (remoteCode <= kVersionCode) {
         if (!silent && mounted) {
@@ -663,12 +650,27 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       await prefs.setString('tv_pass', password);
       await _upsertProfile(prefs, username, password);
       if (!mounted) return false;
+      final expire = '${data['expire_days'] ?? data['expire'] ?? ''}'.trim();
+      final rem = '${data['remaining_gb'] ?? ''}'.trim();
+      final used = '${data['used_gb'] ?? ''}'.trim();
+      final total = '${data['total_gb'] ?? ''}'.trim();
+      final parts = <String>[];
+      if (rem.isNotEmpty && rem != 'null') {
+        parts.add('مانده: $rem گیگ');
+      } else if (total.isNotEmpty && total != 'null') {
+        parts.add('حجم: $total گیگ');
+      }
+      if (used.isNotEmpty && used != 'null') parts.add('مصرف: $used');
+      if (expire.isNotEmpty && expire != 'null') parts.add(expire);
+      final quota = parts.join(' · ');
+
       setState(() {
         _user = username;
         _pass = password;
         _servers = list;
         _selected = 0;
         _loginError = null;
+        _quotaLine = quota;
       });
       return true;
     } catch (e) {
@@ -905,7 +907,42 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     return true;
   }
 
-  Future<void> _smartConnect({bool isRecovery = false}) async {
+  /// بروزرسانی لیست سرورها از ربات (دستی یا خودکار)
+  Future<bool> _refreshSubscription({bool quiet = false}) async {
+    if (_user == null || _pass == null) {
+      if (!quiet && mounted) {
+        setState(() => _statusLine = 'اول وارد حساب شوید');
+      }
+      return false;
+    }
+    if (!quiet && mounted) {
+      setState(() {
+        _phase = TvPhase.finding;
+        _statusLine = 'در حال بروزرسانی اشتراک…';
+      });
+    }
+    final ok = await _login(_user!, _pass!, silent: true);
+    if (!mounted) return ok;
+    if (ok) {
+      if (!quiet) {
+        setState(() {
+          _statusLine =
+              'اشتراک بروز شد · ${_servers.length} سرور آماده';
+          if (_phase == TvPhase.finding) _phase = TvPhase.idle;
+        });
+      }
+      return true;
+    }
+    if (!quiet) {
+      setState(() {
+        _statusLine = 'بروزرسانی اشتراک ناموفق بود';
+        if (_phase == TvPhase.finding) _phase = TvPhase.idle;
+      });
+    }
+    return false;
+  }
+
+  Future<void> _smartConnect({bool isRecovery = false, bool didRefresh = false}) async {
     if (_servers.isEmpty) {
       if (_user != null && _pass != null) {
         setState(() {
@@ -947,6 +984,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     final tryList = alive.isNotEmpty ? alive : List<TvServer>.from(_servers);
 
     if (tryList.isEmpty) {
+      // یک‌بار اشتراک را بروز کن و دوباره تلاش
+      if (!didRefresh && _user != null && _pass != null && _userWantsOn) {
+        if (mounted) {
+          setState(() => _statusLine = 'سروری نبود — بروزرسانی اشتراک…');
+        }
+        final refreshed = await _refreshSubscription(quiet: true);
+        if (refreshed && _userWantsOn && mounted) {
+          await _smartConnect(isRecovery: isRecovery, didRefresh: true);
+          return;
+        }
+      }
       setState(() {
         _phase = TvPhase.idle;
         _statusLine = 'فهرست سرور خالی است';
@@ -957,6 +1005,25 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
 
     final aliveN = alive.length;
+    // اگر همه ضعیف/مرده بودند و هنوز رفرش نکردیم
+    final allWeak = aliveN == 0 ||
+        (aliveN > 0 && alive.every((s) => s.ping > 2500));
+    if (allWeak && !didRefresh && _user != null && _pass != null && _userWantsOn) {
+      if (mounted) {
+        setState(() {
+          _statusLine = aliveN == 0
+              ? 'سرور زنده‌ای نبود — بروزرسانی اشتراک…'
+              : 'سرورها ضعیف بودند — بروزرسانی اشتراک…';
+        });
+      }
+      final refreshed = await _refreshSubscription(quiet: true);
+      if (refreshed && _userWantsOn && mounted) {
+        await _smartConnect(isRecovery: isRecovery, didRefresh: true);
+        return;
+      }
+      // اگر رفرش شکست خورد با همان tryList ادامه بده
+    }
+
     if (mounted) {
       setState(() {
         _statusLine = aliveN > 0
@@ -965,7 +1032,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       });
     }
 
-    // همهٔ کاندیدها را به‌ترتیب کیفیت امتحان کن (نه فقط ۵ تا)
+    // همهٔ کاندیدها را به‌ترتیب کیفیت امتحان کن
     for (var i = 0; i < tryList.length; i++) {
       if (!_userWantsOn || !mounted) return;
       final s = tryList[i];
@@ -983,26 +1050,46 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           if (!_userWantsOn) return;
           continue;
         }
-        // تا ~۱۰ ثانیه منتظر CONNECTED + verify
-        for (var t = 0; t < 25; t++) {
-          await Future.delayed(const Duration(milliseconds: 400));
+        // تا حدود ۱۵ ثانیه منتظر وضعیت CONNECT از هسته
+        for (var tick = 0; tick < 30; tick++) {
+          await Future.delayed(const Duration(milliseconds: 500));
           if (!mounted || !_userWantsOn) return;
           if (_isOn) return;
           final st = (_coreState ?? '').toUpperCase();
-          if (st == 'CONNECTED' && !_verified) {
-            // فرصت به verify
-            await Future.delayed(const Duration(milliseconds: 500));
-            if (_isOn) return;
+          if (st.contains('CONNECT')) {
+            if (mounted) {
+              setState(() {
+                _verified = true;
+                _phase = TvPhase.connected;
+                _statusLine = 'متصل هستید';
+                if (s.ping > 0) _activePing = s.ping;
+              });
+            }
+            _spin.duration = const Duration(seconds: 8);
+            if (!_spin.isAnimating) _spin.repeat();
+            return;
           }
         }
         try {
-          await _v2ray.stopV2Ray();
+          await _v2ray.stopV2Ray().timeout(const Duration(seconds: 2));
         } catch (_) {}
       } catch (e) {
         debugPrint('try server fail: $e');
         try {
           await _v2ray.stopV2Ray();
         } catch (_) {}
+      }
+    }
+
+    // همه سرورها شکست → یک‌بار رفرش اشتراک و تلاش مجدد
+    if (!didRefresh && _user != null && _pass != null && _userWantsOn && mounted) {
+      setState(() {
+        _statusLine = 'اتصال برقرار نشد — بروزرسانی اشتراک و تلاش دوباره…';
+      });
+      final refreshed = await _refreshSubscription(quiet: true);
+      if (refreshed && _userWantsOn && mounted) {
+        await _smartConnect(isRecovery: true, didRefresh: true);
+        return;
       }
     }
 
@@ -1076,9 +1163,11 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           n.contains('آلبانی') ||
           n.contains('البانی') ||
           n.contains('🇦🇱') ||
-          n.contains(' al ') ||
-          n.startsWith('al-') ||
-          n.contains('-al-') ||
+          n.contains('no ads') ||
+          n.contains('noads') ||
+          n.contains('no-ads') ||
+          n.contains('بدون تبلیغ') ||
+          n.contains(' tirana') ||
           n.contains('tirana');
     }
 
@@ -1088,7 +1177,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         setState(() {
           _phase = TvPhase.idle;
           _statusLine =
-              'سرور آلبانی در این اشتراک پیدا نشد. از اتصال هوشمند استفاده کنید.';
+              'سرور آلبانی / بدون‌تبلیغ در این اشتراک پیدا نشد.';
         });
       }
       return;
@@ -1098,61 +1187,60 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     if (mounted) {
       setState(() {
         _phase = TvPhase.finding;
-        _statusLine = 'یوتیوب بدون تبلیغ — سنجش سرور آلبانی…';
+        _statusLine = 'یوتیوب بدون تبلیغ — پیدا کردن سرور آلبانی…';
       });
     }
     _spin.duration = const Duration(seconds: 2);
     _spin.repeat();
 
-    await _mapConcurrent(candidates, 6, (s) async {
+    // پینگ اختیاری؛ حتی اگر پینگ نداد باز هم امتحان اتصال می‌کنیم
+    await _mapConcurrent(candidates, 4, (s) async {
       final p = await _realPing(s);
       s.ping = p;
     });
-
     candidates.sort((a, b) {
       final pa = a.ping > 0 ? a.ping : 999999;
       final pb = b.ping > 0 ? b.ping : 999999;
       return pa.compareTo(pb);
     });
 
-    final alive = candidates.where((s) => s.ping > 0).toList();
-    if (alive.isEmpty) {
-      _userWantsOn = false;
-      _spin.stop();
+    final tryList = candidates; // همه کاندیدهای آلبانی
+
+    for (var i = 0; i < tryList.length; i++) {
+      if (!_userWantsOn || !mounted) return;
+      final s = tryList[i];
+      final idx = _servers.indexOf(s);
       if (mounted) {
         setState(() {
-          _phase = TvPhase.idle;
-          _statusLine =
-              'سرور آلبانی الان پاسخ نداد. بعداً دوباره امتحان کنید یا اتصال هوشمند بزنید.';
+          if (idx >= 0) _selected = idx;
+          _phase = TvPhase.connecting;
+          _statusLine = s.ping > 0
+              ? 'آلبانی ${i + 1}/${tryList.length} · ${s.ping} ms'
+              : 'اتصال آلبانی ${i + 1}/${tryList.length}…';
         });
-      }
-      return;
-    }
-
-    // اتصال به بهترین آلبانی
-    if (mounted) {
-      setState(() {
-        _phase = TvPhase.connecting;
-        _statusLine =
-            'اتصال به آلبانی برای یوتیوب… (${alive.first.ping} ms)';
-        final idx = _servers.indexOf(alive.first);
-        if (idx >= 0) _selected = idx;
-      });
-    }
-
-    for (final s in alive) {
-      if (!_userWantsOn) break;
-      final ok = await _startServer(s);
-      if (!ok) continue;
-      // صبر برای status
-      for (var i = 0; i < 20; i++) {
-        await Future.delayed(const Duration(milliseconds: 400));
-        if (_isOn) return;
-        if (!_userWantsOn) return;
       }
       try {
         await _v2ray.stopV2Ray();
       } catch (_) {}
+      final ok = await _startServer(s);
+      if (!ok) continue;
+      for (var tick = 0; tick < 30; tick++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted || !_userWantsOn) return;
+        if (_isOn) return;
+        final st = (_coreState ?? '').toUpperCase();
+        if (st.contains('CONNECT')) {
+          if (mounted) {
+            setState(() {
+              _verified = true;
+              _phase = TvPhase.connected;
+              _statusLine = 'متصل به آلبانی — مناسب یوتیوب';
+              if (s.ping > 0) _activePing = s.ping;
+            });
+          }
+          return;
+        }
+      }
     }
 
     if (mounted && !_isOn) {
@@ -1160,7 +1248,8 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       _spin.stop();
       setState(() {
         _phase = TvPhase.idle;
-        _statusLine = 'اتصال به سرور آلبانی برقرار نشد';
+        _statusLine =
+            'الان به آلبانی وصل نشد. اتصال هوشمند را امتحان کنید.';
       });
     }
   }
@@ -1402,6 +1491,13 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                       _user ?? '',
                       style: const TextStyle(color: Colors.white54, fontSize: 14),
                     ),
+                    if (_quotaLine.isNotEmpty)
+                      Text(
+                        _quotaLine,
+                        style: const TextStyle(color: kCyan, fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                   ],
                 ),
               ),
@@ -1410,9 +1506,33 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                 onPressed: _showProfilesSheet,
                 background: kCard,
                 foreground: Colors.white70,
+                minWidth: 88,
+                minHeight: 44,
+                child: const Text('اشتراک‌ها', style: TextStyle(fontSize: 13)),
+              ),
+              const SizedBox(width: 6),
+              _FocusBtn(
+                focusNode: FocusNode(),
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        await _refreshSubscription(quiet: false);
+                      },
+                background: kCard,
+                foreground: Colors.white70,
                 minWidth: 100,
                 minHeight: 44,
-                child: const Text('اشتراک‌ها', style: TextStyle(fontSize: 14)),
+                child: const Text('بروز سرورها', style: TextStyle(fontSize: 12)),
+              ),
+              const SizedBox(width: 6),
+              _FocusBtn(
+                focusNode: FocusNode(),
+                onPressed: () => _checkUpdate(silent: false),
+                background: kCard,
+                foreground: Colors.white70,
+                minWidth: 80,
+                minHeight: 44,
+                child: const Text('آپدیت اپ', style: TextStyle(fontSize: 12)),
               ),
               const SizedBox(width: 8),
               _FocusBtn(
@@ -1420,7 +1540,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                 onPressed: _logout,
                 background: kCard,
                 foreground: Colors.white70,
-                minWidth: 90,
+                minWidth: 80,
                 minHeight: 44,
                 child: const Text('خروج', style: TextStyle(fontSize: 15)),
               ),
