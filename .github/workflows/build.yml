@@ -131,7 +131,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tv-1.0.4-${{ github.run_number }}
+          tag_name: tv-1.0.5-${{ github.run_number }}
           name: JET VPN TV ${{ github.run_number }}
           files: |
             release-files/JET-VPN-TV-arm64.apk
