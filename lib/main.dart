@@ -1478,8 +1478,8 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 24),
             child: Text(
-              '🚀 اتصال سریع و پایدار روی تلویزیون · سرور هوشمند · تونل کامل
-از ربات جت‌کانفیگ، همیشه آنلاین بمانید',
+              '🚀 اتصال سریع و پایدار روی تلویزیون · سرور هوشمند · تونل کامل\n'
+              'از ربات جت‌کانفیگ، همیشه آنلاین بمانید',
               style: TextStyle(color: Colors.white38, fontSize: 13, height: 1.4),
               textAlign: TextAlign.center,
             ),
