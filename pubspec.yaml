@@ -1,7 +1,7 @@
 name: jet_vpn_tv
 description: JET VPN for Android TV / Google TV — separate from mobile app
 publish_to: "none"
-version: 1.0.5+105
+version: 1.0.7+107
 
 environment:
   sdk: ">=3.1.0 <4.0.0"
