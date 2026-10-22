@@ -36,11 +36,13 @@ jobs:
             cp -f pubspec.yaml /tmp/jet-tv-keep/ || true
             cp -f lib/main.dart /tmp/jet-tv-keep/ || true
             cp -f patch_tv.py /tmp/jet-tv-keep/ || true
+            cp -f logotype.png /tmp/jet-tv-keep/ || true
             flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
             cp -f /tmp/jet-tv-keep/pubspec.yaml . || true
             mkdir -p lib
             cp -f /tmp/jet-tv-keep/main.dart lib/main.dart || true
             cp -f /tmp/jet-tv-keep/patch_tv.py . || true
+            cp -f /tmp/jet-tv-keep/logotype.png . || true
           fi
           test -f lib/main.dart
           test -f pubspec.yaml
@@ -176,7 +178,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tv-1.0.3-${{ github.run_number }}
+          tag_name: tv-1.0.4-${{ github.run_number }}
           name: JET VPN TV ${{ github.run_number }}
           files: release-files/*.apk
           body: |
