@@ -44,16 +44,111 @@ jobs:
           fi
           test -f lib/main.dart
           test -f pubspec.yaml
-          test -f patch_tv.py
 
       - name: Patch Android for TV
         run: python3 patch_tv.py
 
+      # امضای یکسان = آپدیت بدون پاک کردن اپ
+      # در Settings → Secrets ریپو این‌ها را بگذار (اختیاری ولی توصیه‌شده):
+      # KEYSTORE_BASE64, KEY_ALIAS, KEY_PASSWORD, STORE_PASSWORD
+      - name: Setup release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        run: |
+          set -e
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEY_ALIAS" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/jetconfig-release.jks
+            cat > android/key.properties << PROP
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=jetconfig-release.jks
+          PROP
+            echo "signing: release keystore ready"
+            python3 << 'PY'
+          from pathlib import Path
+          import re
+          for name in ("android/app/build.gradle", "android/app/build.gradle.kts"):
+              path = Path(name)
+              if not path.exists():
+                  continue
+              g = path.read_text(encoding="utf-8")
+              if "signingConfigs" in g and "key.properties" in g:
+                  print("already patched", name)
+                  continue
+              if path.suffix == ".kts":
+                  loader = (
+                      "import java.util.Properties\n"
+                      "import java.io.FileInputStream\n"
+                      "val keystoreProperties = Properties()\n"
+                      "val keystorePropertiesFile = rootProject.file(\"key.properties\")\n"
+                      "if (keystorePropertiesFile.exists()) {\n"
+                      "    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\n"
+                      "}\n\n"
+                  )
+                  if "keystoreProperties" not in g:
+                      g = loader + g
+                  if "signingConfigs" not in g:
+                      block = (
+                          "\n    signingConfigs {\n"
+                          "        create(\"release\") {\n"
+                          "            keyAlias = keystoreProperties[\"keyAlias\"] as String?\n"
+                          "            keyPassword = keystoreProperties[\"keyPassword\"] as String?\n"
+                          "            storeFile = (keystoreProperties[\"storeFile\"] as String?)?.let { file(it) }\n"
+                          "            storePassword = keystoreProperties[\"storePassword\"] as String?\n"
+                          "        }\n"
+                          "    }\n"
+                      )
+                      g = g.replace("buildTypes {", "buildTypes {" + block, 1)
+                  if 'signingConfig = signingConfigs.getByName("release")' not in g:
+                      g = re.sub(
+                          r'(release\s*\{)',
+                          r'\1\n            signingConfig = signingConfigs.getByName("release")',
+                          g,
+                          count=1,
+                      )
+              else:
+                  loader = (
+                      "def keystoreProperties = new Properties()\n"
+                      "def keystorePropertiesFile = rootProject.file('key.properties')\n"
+                      "if (keystorePropertiesFile.exists()) {\n"
+                      "    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))\n"
+                      "}\n\n"
+                  )
+                  if "keystoreProperties" not in g:
+                      g = loader + g
+                  if "signingConfigs {" not in g:
+                      block = (
+                          "\n    signingConfigs {\n"
+                          "        release {\n"
+                          "            keyAlias keystoreProperties['keyAlias']\n"
+                          "            keyPassword keystoreProperties['keyPassword']\n"
+                          "            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null\n"
+                          "            storePassword keystoreProperties['storePassword']\n"
+                          "        }\n"
+                          "    }\n"
+                      )
+                      g = g.replace("buildTypes {", "buildTypes {" + block, 1)
+                  if "signingConfig signingConfigs.release" not in g:
+                      g = re.sub(
+                          r"(release\s*\{)",
+                          r"\1\n            signingConfig signingConfigs.release",
+                          g,
+                          count=1,
+                      )
+              path.write_text(g, encoding="utf-8")
+              print("signing patched", name)
+          PY
+          else
+            echo "signing: no secrets — debug/unsigned (آپدیت بدون پاک کردن ممکن نیست)"
+          fi
+
       - name: Flutter pub get
         run: flutter pub get
 
-      # حجم: مثل موبایل — split-per-abi (نه APK یکپارچه ۱۸۰ مگ)
-      # اکثر تی‌وی‌ها arm64 هستند
       - name: Build APK split by ABI
         run: |
           set -e
@@ -64,7 +159,6 @@ jobs:
         run: |
           set -e
           mkdir -p release-files
-          # اولویت arm64 (حجم حدود ۵۰–۷۰ مگ)
           if [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ]; then
             cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk release-files/JET-VPN-TV-arm64.apk
           fi
@@ -82,12 +176,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tv-1.0.1-${{ github.run_number }}
+          tag_name: tv-1.0.3-${{ github.run_number }}
           name: JET VPN TV ${{ github.run_number }}
           files: release-files/*.apk
           body: |
-            نصب پیشنهادی روی اکثر تلویزیون‌ها: **JET-VPN-TV-arm64.apk**
-            باکس‌های قدیمی ۳۲بیتی: JET-VPN-TV-arm32.apk
-            حجم حدود ۵۰–۷۰ مگ (نه نسخه universal سنگین)
+            نصب پیشنهادی: **JET-VPN-TV-arm64.apk**
+            برای آپدیت بدون پاک کردن، امضای یکسان (Secrets) لازم است.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
