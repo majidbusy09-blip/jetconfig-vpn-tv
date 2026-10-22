@@ -1,0 +1,149 @@
+# JET VPN TV — فقط بیلد اپ تلویزیون (مستقل از موبایل)
+name: Build JET VPN TV
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.4"
+          channel: stable
+          cache: true
+
+      - name: Ensure Flutter Android project
+        run: |
+          set -e
+          # اگر پوشه android نیست، پروژه را بساز؛ فایل‌های ما را حفظ کن
+          if [ ! -d android ]; then
+            mkdir -p /tmp/jet-tv-keep
+            cp -f pubspec.yaml /tmp/jet-tv-keep/ 2>/dev/null || true
+            cp -f lib/main.dart /tmp/jet-tv-keep/ 2>/dev/null || true
+            flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
+            cp -f /tmp/jet-tv-keep/pubspec.yaml . 2>/dev/null || true
+            mkdir -p lib
+            cp -f /tmp/jet-tv-keep/main.dart lib/main.dart 2>/dev/null || true
+          fi
+          test -f lib/main.dart
+          test -f pubspec.yaml
+
+      - name: Patch AndroidManifest for TV + label
+        run: |
+          set -e
+          M=android/app/src/main/AndroidManifest.xml
+          test -f "$M"
+          # نام اپ
+          sed -i 's/android:label="[^"]*"/android:label="JET VPN TV"/' "$M" || true
+
+          # leanback feature
+          if ! grep -q 'android.software.leanback' "$M"; then
+            sed -i 's|<manifest |<manifest |\n|' "$M"
+            python3 << 'PY'
+          from pathlib import Path
+          p = Path("android/app/src/main/AndroidManifest.xml")
+          t = p.read_text(encoding="utf-8")
+          inject = '''
+      <uses-feature android:name="android.software.leanback" android:required="false"/>
+      <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+      <uses-permission android:name="android.permission.INTERNET"/>
+          '''
+          if "android.software.leanback" not in t:
+              t = t.replace("<manifest", "<manifest", 1)
+              # بعد از تگ manifest اول، قبل از application
+              if "<application" in t:
+                  t = t.replace("<application", inject + "\n    <application", 1)
+              p.write_text(t, encoding="utf-8")
+          print("features ok")
+          PY
+          fi
+
+          # LEANBACK_LAUNCHER intent-filter
+          python3 << 'PY'
+          from pathlib import Path
+          p = Path("android/app/src/main/AndroidManifest.xml")
+          t = p.read_text(encoding="utf-8")
+          if "LEANBACK_LAUNCHER" not in t:
+              block = '''
+                  <intent-filter>
+                      <action android:name="android.intent.action.MAIN"/>
+                      <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+                  </intent-filter>'''
+              # بعد از اولین LAUNCHER filter
+              needle = 'android.intent.category.LAUNCHER"/>'
+              idx = t.find(needle)
+              if idx != -1:
+                  # پیدا کردن پایان intent-filter
+                  end = t.find("</intent-filter>", idx)
+                  if end != -1:
+                      end = end + len("</intent-filter>")
+                      t = t[:end] + "\n" + block + t[end:]
+                      p.write_text(t, encoding="utf-8")
+                      print("LEANBACK added")
+                  else:
+                      print("WARN: intent-filter end not found")
+              else:
+                  print("WARN: LAUNCHER not found — append near activity")
+          else:
+              print("LEANBACK already present")
+          PY
+          grep -n "LEANBACK\|leanback\|label=" "$M" | head -20
+
+      - name: minSdk / compileSdk
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          import re
+          for name in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
+              path = Path(name)
+              if not path.exists():
+                  continue
+              g = path.read_text(encoding="utf-8")
+              g = re.sub(r"minSdkVersion\s+[^\n]+", "minSdkVersion 24", g)
+              g = re.sub(r"minSdk\s*=\s*[^\n]+", "minSdk = 24", g)
+              g = re.sub(r"compileSdkVersion\s+[^\n]+", "compileSdkVersion 35", g)
+              g = re.sub(r"compileSdk\s*=\s*[^\n]+", "compileSdk = 35", g)
+              g = re.sub(r"targetSdkVersion\s+[^\n]+", "targetSdkVersion 35", g)
+              g = re.sub(r"targetSdk\s*=\s*[^\n]+", "targetSdk = 35", g)
+              path.write_text(g, encoding="utf-8")
+              print("patched", name)
+          PY
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build APK release
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JET-VPN-TV
+          path: build/app/outputs/flutter-apk/*.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tv-1.0.0-${{ github.run_number }}
+          name: JET VPN TV ${{ github.run_number }}
+          files: build/app/outputs/flutter-apk/*.apk
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
