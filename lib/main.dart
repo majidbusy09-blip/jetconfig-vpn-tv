@@ -8,10 +8,12 @@ import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-const String kAppVersion = 'tv-1.0.2';
+const String kAppVersion = 'tv-1.0.3';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
+const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
+const int kVersionCode = 103;
 
 // رنگ‌های برند جت
 const Color kBg = Color(0xFF0A0E1A);
@@ -245,7 +247,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       setState(() {
         _verified = false;
         _phase = TvPhase.recovering;
-        _statusLine = 'اتصال تأیید نشد — سرور بعدی…';
+        _statusLine = 'این سرور پایدار نبود — امتحان سرور بعدی';
       });
       _scheduleRecover('verify_fail');
     }
@@ -259,6 +261,168 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       await _smartConnect(isRecovery: true);
     });
     debugPrint('tv recover: $reason');
+  }
+
+
+  Future<void> _upsertProfile(SharedPreferences prefs, String u, String p) async {
+    final raw = prefs.getString('tv_profiles') ?? '[]';
+    List list;
+    try {
+      list = json.decode(raw) as List;
+    } catch (_) {
+      list = [];
+    }
+    final filtered = list
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .where((e) => '${e['u']}' != u)
+        .toList();
+    filtered.insert(0, {'u': u, 'p': p});
+    if (filtered.length > 12) {
+      filtered.removeRange(12, filtered.length);
+    }
+    await prefs.setString('tv_profiles', json.encode(filtered));
+  }
+
+  Future<List<Map<String, String>>> _loadProfiles() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('tv_profiles') ?? '[]';
+    try {
+      final list = json.decode(raw) as List;
+      return list
+          .whereType<Map>()
+          .map((e) => {
+                'u': '${e['u'] ?? ''}',
+                'p': '${e['p'] ?? ''}',
+              })
+          .where((e) => e['u']!.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _switchProfile(String u, String p) async {
+    _userWantsOn = false;
+    _recoverTimer?.cancel();
+    _spin.stop();
+    try {
+      await _v2ray.stopV2Ray();
+    } catch (_) {}
+    final ok = await _login(u, p, silent: false);
+    if (ok && mounted) {
+      setState(() {
+        _loggedIn = true;
+        _phase = TvPhase.idle;
+        _verified = false;
+        _statusLine = 'اشتراک فعال شد — آماده اتصال';
+        _userCtrl.text = u;
+        _passCtrl.text = p;
+      });
+    }
+  }
+
+  Future<void> _showProfilesSheet() async {
+    final profiles = await _loadProfiles();
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'اشتراک‌های ذخیره‌شده',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: kCyan),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                if (profiles.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('هنوز اشتراکی ذخیره نشده', textAlign: TextAlign.center),
+                  ),
+                ...profiles.map((pr) {
+                  final active = pr['u'] == _user;
+                  return ListTile(
+                    leading: Icon(
+                      active ? Icons.check_circle : Icons.person_outline,
+                      color: active ? kTeal : Colors.white54,
+                    ),
+                    title: Text(pr['u']!, style: const TextStyle(fontSize: 16)),
+                    subtitle: active ? const Text('فعال', style: TextStyle(color: kTeal)) : null,
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      if (!active) await _switchProfile(pr['u']!, pr['p']!);
+                    },
+                  );
+                }),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('بستن'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _checkUpdate({bool silent = true}) async {
+    try {
+      final res = await http
+          .get(Uri.parse(kUpdateMetaUrl))
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200) return;
+      final data = json.decode(res.body);
+      if (data is! Map) return;
+      final remoteCode = int.tryParse('${data['versionCode'] ?? 0}') ?? 0;
+      final remoteVer = '${data['version'] ?? ''}';
+      final apk = '${data['apk_arm64'] ?? data['apk'] ?? ''}';
+      if (remoteCode <= kVersionCode) {
+        if (!silent && mounted) {
+          setState(() => _statusLine = 'برنامه به‌روز است ($kAppVersion)');
+        }
+        return;
+      }
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: kCard,
+          title: const Text('بروزرسانی موجود است', style: TextStyle(color: kCyan)),
+          content: Text(
+            'نسخه جدید: $remoteVer\nنسخه فعلی: $kAppVersion\n\nاز بخش Releases گیت‌هاب یا لینک زیر نصب کنید.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('بعداً')),
+            if (apk.isNotEmpty)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  setState(() => _statusLine = 'لینک بروزرسانی: در Releases دریافت کنید');
+                },
+                child: const Text('متوجه شدم', style: TextStyle(color: kCyan)),
+              ),
+          ],
+        ),
+      );
+    } catch (e) {
+      debugPrint('update check: $e');
+      if (!silent && mounted) {
+        setState(() => _statusLine = 'بررسی بروزرسانی ممکن نشد');
+      }
+    }
   }
 
   Future<bool> _login(String username, String password, {bool silent = false}) async {
@@ -298,6 +462,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('tv_user', username);
       await prefs.setString('tv_pass', password);
+      await _upsertProfile(prefs, username, password);
       if (!mounted) return false;
       setState(() {
         _user = username;
@@ -328,6 +493,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       setState(() => _loggedIn = true);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _connectFocus.requestFocus();
+        _checkUpdate(silent: true);
       });
     }
   }
@@ -493,7 +659,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     final total = _servers.length;
     if (mounted) {
       setState(() {
-        _statusLine = 'بررسی سرورها ۰ از $total…';
+        _statusLine = 'در حال سنجش سرورها (۰ از $total)';
       });
     }
     await _mapConcurrent(_servers, 8, (s) async {
@@ -502,7 +668,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       _pingedCount++;
       if (mounted) {
         setState(() {
-          _statusLine = 'بررسی سرورها $_pingedCount از $total…';
+          _statusLine = 'در حال سنجش سرورها ($_pingedCount از $total)';
         });
       }
     });
@@ -527,7 +693,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       if (mounted) {
         setState(() {
           _phase = TvPhase.idle;
-          _statusLine = 'مجوز VPN تأیید نشد — OK را بزنید';
+          _statusLine = 'مجوز VPN داده نشد. دوباره تلاش کنید و مجوز را بپذیرید';
           _userWantsOn = false;
         });
         _spin.stop();
@@ -550,13 +716,13 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       if (_user != null && _pass != null) {
         setState(() {
           _phase = TvPhase.finding;
-          _statusLine = 'بروزرسانی فهرست سرورها…';
+          _statusLine = 'در حال دریافت فهرست سرورها';
         });
         final ok = await _login(_user!, _pass!, silent: true);
         if (!ok || _servers.isEmpty) {
           setState(() {
             _phase = TvPhase.idle;
-            _statusLine = 'سروری در دسترس نیست';
+            _statusLine = 'هیچ سروری برای این اشتراک پیدا نشد';
             _userWantsOn = false;
           });
           _spin.stop();
@@ -589,7 +755,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     if (tryList.isEmpty) {
       setState(() {
         _phase = TvPhase.idle;
-        _statusLine = 'سروری یافت نشد';
+        _statusLine = 'فهرست سرور خالی است';
         _userWantsOn = false;
       });
       _spin.stop();
@@ -600,8 +766,8 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     if (mounted) {
       setState(() {
         _statusLine = aliveN > 0
-            ? '$aliveN سرور زنده — اتصال به بهترین…'
-            : 'پینگ ناموفق — تلاش مستقیم روی همه…';
+            ? 'یافت شد: $aliveN سرور مناسب — اتصال به بهترین…'
+            : 'پینگ کامل نشد — تلاش روی فهرست سرورها…';
       });
     }
 
@@ -613,9 +779,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       setState(() {
         _selected = idx >= 0 ? idx : 0;
         _phase = TvPhase.connecting;
-        final pingTxt = s.ping > 0 ? ' · ${s.ping}ms' : '';
-        _statusLine =
-            'اتصال ${i + 1} از ${tryList.length}$pingTxt';
+        _statusLine = s.ping > 0
+            ? 'اتصال به سرور ${i + 1} از ${tryList.length} — تأخیر ${s.ping} میلی‌ثانیه'
+            : 'اتصال به سرور ${i + 1} از ${tryList.length}…';
       });
       try {
         final started = await _startServer(s);
@@ -650,7 +816,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     if (_userWantsOn && !_isOn) {
       setState(() {
         _phase = TvPhase.idle;
-        _statusLine = 'اتصال برقرار نشد — دوباره تلاش کنید';
+        _statusLine = 'اتصال برقرار نشد. دوباره دکمه اتصال را بزنید';
         _userWantsOn = false;
       });
       _spin.stop();
@@ -670,7 +836,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           _phase = TvPhase.idle;
           _verified = false;
           _activePing = -1;
-          _statusLine = 'قطع شد';
+          _statusLine = 'اتصال قطع شد';
         });
       }
       _spin.stop();
@@ -899,11 +1065,21 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                 ),
               ),
               _FocusBtn(
+                focusNode: FocusNode(),
+                onPressed: _showProfilesSheet,
+                background: kCard,
+                foreground: Colors.white70,
+                minWidth: 100,
+                minHeight: 44,
+                child: const Text('اشتراک‌ها', style: TextStyle(fontSize: 14)),
+              ),
+              const SizedBox(width: 8),
+              _FocusBtn(
                 focusNode: _logoutFocus,
                 onPressed: _logout,
                 background: kCard,
                 foreground: Colors.white70,
-                minWidth: 110,
+                minWidth: 90,
                 minHeight: 44,
                 child: const Text('خروج', style: TextStyle(fontSize: 15)),
               ),
@@ -962,15 +1138,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   String get _buttonHint {
     switch (_phase) {
       case TvPhase.finding:
-        return 'در حال یافتن بهترین سرور…';
+        return 'در حال یافتن بهترین سرور';
       case TvPhase.connecting:
-        return 'در حال اتصال…';
+        return 'در حال برقراری اتصال';
       case TvPhase.connected:
-        return _isOn ? 'متصل — برای قطع OK بزنید' : 'در حال اتصال…';
+        return _isOn ? 'متصل هستید' : 'در حال برقراری اتصال';
       case TvPhase.recovering:
-        return 'در حال بازیابی…';
+        return 'در حال بازیابی اتصال';
       case TvPhase.idle:
-        return 'برای اتصال OK بزنید';
+        return 'برای اتصال، دکمه را بزنید';
     }
   }
 }
