@@ -35,57 +35,19 @@ jobs:
             mkdir -p /tmp/jet-tv-keep
             cp -f pubspec.yaml /tmp/jet-tv-keep/ || true
             cp -f lib/main.dart /tmp/jet-tv-keep/ || true
+            cp -f patch_tv.py /tmp/jet-tv-keep/ || true
             flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
             cp -f /tmp/jet-tv-keep/pubspec.yaml . || true
             mkdir -p lib
             cp -f /tmp/jet-tv-keep/main.dart lib/main.dart || true
+            cp -f /tmp/jet-tv-keep/patch_tv.py . || true
           fi
           test -f lib/main.dart
           test -f pubspec.yaml
+          test -f patch_tv.py
 
       - name: Patch Android for TV
-        run: |
-          set -e
-          M="android/app/src/main/AndroidManifest.xml"
-          test -f "$M"
-          sed -i 's/android:label="[^"]*"/android:label="JET VPN TV"/' "$M" || true
-          python3 -c "
-          from pathlib import Path
-          p = Path('android/app/src/main/AndroidManifest.xml')
-          t = p.read_text(encoding='utf-8')
-          if 'android.software.leanback' not in t and '<application' in t:
-              inject = '''    <uses-feature android:name=\"android.software.leanback\" android:required=\"false\"/>
-      <uses-feature android:name=\"android.hardware.touchscreen\" android:required=\"false\"/>
-      <uses-permission android:name=\"android.permission.INTERNET\"/>
-          '''
-              t = t.replace('<application', inject + '\n    <application', 1)
-          if 'LEANBACK_LAUNCHER' not in t:
-              block = '''
-                  <intent-filter>
-                      <action android:name=\"android.intent.action.MAIN\"/>
-                      <category android:name=\"android.intent.category.LEANBACK_LAUNCHER\"/>
-                  </intent-filter>'''
-              needle = 'android.intent.category.LAUNCHER\"/>'
-              idx = t.find(needle)
-              if idx != -1:
-                  end = t.find('</intent-filter>', idx)
-                  if end != -1:
-                      end = end + len('</intent-filter>')
-                      t = t[:end] + '\n' + block + t[end:]
-          p.write_text(t, encoding='utf-8')
-          print('manifest patched')
-          "
-          for f in android/app/build.gradle android/app/build.gradle.kts; do
-            if [ -f "$f" ]; then
-              sed -i 's/minSdkVersion .*/minSdkVersion 24/' "$f" || true
-              sed -i 's/minSdk = .*/minSdk = 24/' "$f" || true
-              sed -i 's/compileSdkVersion .*/compileSdkVersion 35/' "$f" || true
-              sed -i 's/compileSdk = .*/compileSdk = 35/' "$f" || true
-              sed -i 's/targetSdkVersion .*/targetSdkVersion 35/' "$f" || true
-              sed -i 's/targetSdk = .*/targetSdk = 35/' "$f" || true
-              echo patched "$f"
-            fi
-          done
+        run: python3 patch_tv.py
 
       - name: Flutter pub get
         run: flutter pub get
