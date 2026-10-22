@@ -52,20 +52,42 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build APK release
-        run: flutter build apk --release
+      # حجم: مثل موبایل — split-per-abi (نه APK یکپارچه ۱۸۰ مگ)
+      # اکثر تی‌وی‌ها arm64 هستند
+      - name: Build APK split by ABI
+        run: |
+          set -e
+          flutter build apk --release --split-per-abi
+          ls -lh build/app/outputs/flutter-apk/ || true
+
+      - name: Prepare release files
+        run: |
+          set -e
+          mkdir -p release-files
+          # اولویت arm64 (حجم حدود ۵۰–۷۰ مگ)
+          if [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ]; then
+            cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk release-files/JET-VPN-TV-arm64.apk
+          fi
+          if [ -f build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ]; then
+            cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk release-files/JET-VPN-TV-arm32.apk
+          fi
+          ls -lh release-files/
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: JET-VPN-TV
-          path: build/app/outputs/flutter-apk/*.apk
+          path: release-files/*.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tv-1.0.0-${{ github.run_number }}
+          tag_name: tv-1.0.1-${{ github.run_number }}
           name: JET VPN TV ${{ github.run_number }}
-          files: build/app/outputs/flutter-apk/*.apk
+          files: release-files/*.apk
+          body: |
+            نصب پیشنهادی روی اکثر تلویزیون‌ها: **JET-VPN-TV-arm64.apk**
+            باکس‌های قدیمی ۳۲بیتی: JET-VPN-TV-arm32.apk
+            حجم حدود ۵۰–۷۰ مگ (نه نسخه universal سنگین)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
