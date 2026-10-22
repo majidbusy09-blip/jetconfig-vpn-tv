@@ -36,12 +36,14 @@ jobs:
             cp -f pubspec.yaml /tmp/jet-tv-keep/ || true
             cp -f lib/main.dart /tmp/jet-tv-keep/ || true
             cp -f patch_tv.py /tmp/jet-tv-keep/ || true
+            cp -f patch_signing.py /tmp/jet-tv-keep/ || true
             cp -f logotype.png /tmp/jet-tv-keep/ || true
             flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
             cp -f /tmp/jet-tv-keep/pubspec.yaml . || true
             mkdir -p lib
             cp -f /tmp/jet-tv-keep/main.dart lib/main.dart || true
             cp -f /tmp/jet-tv-keep/patch_tv.py . || true
+            cp -f /tmp/jet-tv-keep/patch_signing.py . || true
             cp -f /tmp/jet-tv-keep/logotype.png . || true
           fi
           test -f lib/main.dart
@@ -62,7 +64,6 @@ jobs:
             echo "signing: no secrets — unsigned/debug"
             exit 0
           fi
-
           echo "$KEYSTORE_BASE64" | base64 -d > android/app/jetconfig-release.jks
           printf '%s\n' \
             "storePassword=$STORE_PASSWORD" \
@@ -71,69 +72,7 @@ jobs:
             "storeFile=jetconfig-release.jks" \
             > android/key.properties
           echo "signing: keystore + key.properties ready"
-
-          # امضا را در انتهای build.gradle اضافه می‌کنیم (بعد از بسته شدن android {})
-          # تا با plugins {} و ساختار جدید Flutter تداخل نکند
-          python3 << 'PY'
-          from pathlib import Path
-
-          GROOVY_TAIL = r'''
-// --- JET VPN TV release signing (appended) ---
-def _jetKp = new Properties()
-def _jetKpFile = rootProject.file("key.properties")
-if (_jetKpFile.exists()) {
-    _jetKp.load(new FileInputStream(_jetKpFile))
-    android.signingConfigs {
-        release {
-            keyAlias _jetKp["keyAlias"]
-            keyPassword _jetKp["keyPassword"]
-            storeFile _jetKp["storeFile"] ? file(_jetKp["storeFile"]) : null
-            storePassword _jetKp["storePassword"]
-        }
-    }
-    android.buildTypes.release.signingConfig android.signingConfigs.release
-}
-'''
-
-          KTS_TAIL = r'''
-// --- JET VPN TV release signing (appended) ---
-import java.util.Properties
-import java.io.FileInputStream
-val _jetKp = Properties()
-val _jetKpFile = rootProject.file("key.properties")
-if (_jetKpFile.exists()) {
-    _jetKp.load(FileInputStream(_jetKpFile))
-    android.signingConfigs {
-        create("release") {
-            keyAlias = _jetKp["keyAlias"] as String?
-            keyPassword = _jetKp["keyPassword"] as String?
-            storeFile = (_jetKp["storeFile"] as String?)?.let { file(it) }
-            storePassword = _jetKp["storePassword"] as String?
-        }
-    }
-    android.buildTypes.getByName("release").signingConfig =
-        android.signingConfigs.getByName("release")
-}
-'''
-
-          for name, tail in (
-              ("android/app/build.gradle", GROOVY_TAIL),
-              ("android/app/build.gradle.kts", KTS_TAIL),
-          ):
-              path = Path(name)
-              if not path.exists():
-                  continue
-              g = path.read_text(encoding="utf-8")
-              # پاک کردن پچ‌های خراب قبلی
-              if "JET VPN TV release signing" in g:
-                  g = g.split("// --- JET VPN TV release signing")[0].rstrip() + "\n"
-              if "keystorePropertiesFile" in g and "JET VPN TV" not in g:
-                  # حذف loader/injectionهای قبلی که ممکن است خراب باشند — احتیاطی
-                  pass
-              g = g.rstrip() + "\n" + tail + "\n"
-              path.write_text(g, encoding="utf-8")
-              print("signing tail appended to", name)
-          PY
+          python3 patch_signing.py
 
       - name: Flutter pub get
         run: flutter pub get
@@ -182,8 +121,8 @@ if (_jetKpFile.exists()) {
             release-files/JET-VPN-TV-arm32.apk
           fail_on_unmatched_files: false
           body: |
-            ### فایل‌های نصب (جداگانه)
-            - **JET-VPN-TV-arm64.apk** — اکثر تی‌وی‌ها (پیشنهادی)
-            - **JET-VPN-TV-arm32.apk** — باکس‌های قدیمی ۳۲بیتی
+            ### نصب
+            - JET-VPN-TV-arm64.apk (پیشنهادی)
+            - JET-VPN-TV-arm32.apk (قدیمی)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
