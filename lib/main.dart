@@ -7,13 +7,16 @@ import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
+import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.3';
+const String kAppVersion = 'tv-1.0.4';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 103;
+const int kVersionCode = 104;
 
 // رنگ‌های برند جت
 const Color kBg = Color(0xFF0A0E1A);
@@ -378,42 +381,66 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     );
   }
 
+
   Future<void> _checkUpdate({bool silent = true}) async {
     try {
       final res = await http
           .get(Uri.parse(kUpdateMetaUrl))
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 10));
       if (res.statusCode != 200) return;
       final data = json.decode(res.body);
       if (data is! Map) return;
-      final remoteCode = int.tryParse('${data['versionCode'] ?? 0}') ?? 0;
+      final enabled = data['enabled'] == true;
+      if (!enabled && silent) return;
+      final remoteCode = int.tryParse('${data['version_code'] ?? data['versionCode'] ?? 0}') ?? 0;
       final remoteVer = '${data['version'] ?? ''}';
-      final apk = '${data['apk_arm64'] ?? data['apk'] ?? ''}';
+      final title = '${data['title'] ?? 'نسخه جدید JET VPN TV'}';
+      final changelog = '${data['changelog'] ?? ''}';
+      final urls = data['urls'];
+      String apk = '';
+      if (urls is Map) {
+        apk = '${urls['arm64'] ?? urls['universal'] ?? ''}';
+      }
+      if (apk.isEmpty) {
+        apk = '${data['apk_arm64'] ?? data['apk'] ?? ''}';
+      }
       if (remoteCode <= kVersionCode) {
         if (!silent && mounted) {
           setState(() => _statusLine = 'برنامه به‌روز است ($kAppVersion)');
         }
         return;
       }
+      if (!enabled && !silent) {
+        if (mounted) setState(() => _statusLine = 'بروزرسانی از پنل خاموش است');
+        return;
+      }
       if (!mounted) return;
+      final force = data['force'] == true;
       await showDialog<void>(
         context: context,
+        barrierDismissible: !force,
         builder: (ctx) => AlertDialog(
           backgroundColor: kCard,
-          title: const Text('بروزرسانی موجود است', style: TextStyle(color: kCyan)),
+          title: Text(title, style: const TextStyle(color: kCyan)),
           content: Text(
-            'نسخه جدید: $remoteVer\nنسخه فعلی: $kAppVersion\n\nاز بخش Releases گیت‌هاب یا لینک زیر نصب کنید.',
+            'نسخه جدید: $remoteVer\nنسخه فعلی: $kAppVersion'
+            '${changelog.isNotEmpty ? '\n\n$changelog' : ''}',
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('بعداً')),
-            if (apk.isNotEmpty)
+            if (!force)
               TextButton(
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  setState(() => _statusLine = 'لینک بروزرسانی: در Releases دریافت کنید');
-                },
-                child: const Text('متوجه شدم', style: TextStyle(color: kCyan)),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('بعداً'),
               ),
+            TextButton(
+              onPressed: apk.isEmpty
+                  ? null
+                  : () async {
+                      Navigator.pop(ctx);
+                      await _downloadAndInstall(apk);
+                    },
+              child: const Text('دانلود و نصب', style: TextStyle(color: kCyan)),
+            ),
           ],
         ),
       );
@@ -424,6 +451,31 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
     }
   }
+
+  Future<void> _downloadAndInstall(String url) async {
+    if (!mounted) return;
+    setState(() => _statusLine = 'در حال دانلود بروزرسانی…');
+    try {
+      final res = await http.get(Uri.parse(url)).timeout(const Duration(minutes: 5));
+      if (res.statusCode != 200 || res.bodyBytes.isEmpty) {
+        setState(() => _statusLine = 'دانلود ناموفق بود');
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/jet_vpn_tv_update.apk');
+      await file.writeAsBytes(res.bodyBytes, flush: true);
+      if (!mounted) return;
+      setState(() => _statusLine = 'دانلود شد — در حال باز کردن نصب…');
+      final r = await OpenFilex.open(file.path);
+      debugPrint('open apk: ${r.message}');
+    } catch (e) {
+      debugPrint('download: $e');
+      if (mounted) {
+        setState(() => _statusLine = 'خطا در دانلود یا نصب بروزرسانی');
+      }
+    }
+  }
+
 
   Future<bool> _login(String username, String password, {bool silent = false}) async {
     if (!silent) {
@@ -978,14 +1030,20 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         ],
       ),
       child: ClipOval(
-        child: Image.network(
-          kLogoUrl,
+        child: Image.asset(
+          'logotype.png',
           width: size,
           height: size,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            color: kCard,
-            child: Icon(Icons.rocket_launch_rounded, size: size * 0.5, color: kCyan),
+          errorBuilder: (_, __, ___) => Image.network(
+            kLogoUrl,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+              color: kCard,
+              child: Icon(Icons.rocket_launch_rounded, size: size * 0.5, color: kCyan),
+            ),
           ),
         ),
       ),
