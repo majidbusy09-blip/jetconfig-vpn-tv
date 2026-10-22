@@ -11,6 +11,12 @@ def patch_manifest():
 
     t = re.sub(r'android:label="[^"]*"', 'android:label="JET VPN TV"', t)
 
+    if "REQUEST_INSTALL_PACKAGES" not in t and "<application" in t:
+        t = t.replace(
+            "<application",
+            '    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n    <application',
+            1,
+        )
     if "android.software.leanback" not in t and "<application" in t:
         inject = (
             '    <uses-feature android:name="android.software.leanback" android:required="false"/>\n'
@@ -54,6 +60,21 @@ def patch_gradle():
         print("gradle ok:", name)
 
 
+def patch_launcher_icon():
+    src = Path("logotype.png")
+    if not src.exists():
+        print("no logotype.png — skip icon")
+        return
+    import shutil
+    res = Path("android/app/src/main/res")
+    for d in ("mipmap-mdpi", "mipmap-hdpi", "mipmap-xhdpi", "mipmap-xxhdpi", "mipmap-xxxhdpi"):
+        dest_dir = res / d
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, dest_dir / "ic_launcher.png")
+    print("launcher icon from logotype.png")
+
+
 if __name__ == "__main__":
     patch_manifest()
     patch_gradle()
+    patch_launcher_icon()
