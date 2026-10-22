@@ -1,9 +1,6 @@
-
-// JET VPN TV — پروژه کاملاً جدا از اپ موبایل
-// فقط Android TV / Google TV | تونل کامل | اتصال هوشمند | ریموت
+// JET VPN TV — پروژه جدا از موبایل | تونل کامل | اتصال هوشمند
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,10 +8,18 @@ import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-const String kAppVersion = 'tv-1.0.0';
+const String kAppVersion = 'tv-1.0.2';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
+
+// رنگ‌های برند جت
+const Color kBg = Color(0xFF0A0E1A);
+const Color kCard = Color(0xFF131B2E);
+const Color kCyan = Color(0xFF00E5FF);
+const Color kCyanDeep = Color(0xFF0052D4);
+const Color kTeal = Color(0xFF00FFA3);
+const Color kTealDeep = Color(0xFF008B74);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,11 +36,11 @@ class JetVpnTvApp extends StatelessWidget {
       title: 'JET VPN TV',
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0B1220),
+        scaffoldBackgroundColor: kBg,
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF22D3EE),
-          secondary: Color(0xFF2DD4BF),
-          surface: Color(0xFF151C2E),
+          primary: kCyan,
+          secondary: kTeal,
+          surface: kCard,
         ),
         fontFamily: 'Tahoma',
         useMaterial3: true,
@@ -68,13 +73,7 @@ class TvServer {
       );
 }
 
-enum TvPhase {
-  idle,
-  finding,
-  connecting,
-  connected,
-  recovering,
-}
+enum TvPhase { idle, finding, connecting, connected, recovering }
 
 class TvRoot extends StatefulWidget {
   const TvRoot({super.key});
@@ -82,8 +81,9 @@ class TvRoot extends StatefulWidget {
   State<TvRoot> createState() => _TvRootState();
 }
 
-class _TvRootState extends State<TvRoot> {
+class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   late final V2ray _v2ray = V2ray(onStatusChanged: _onStatus);
+  late final AnimationController _spin;
 
   final _userCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
@@ -103,6 +103,7 @@ class _TvRootState extends State<TvRoot> {
   String? _pass;
   List<TvServer> _servers = [];
   int _selected = 0;
+  int _pingedCount = 0;
 
   TvPhase _phase = TvPhase.idle;
   String _statusLine = 'آماده اتصال';
@@ -118,9 +119,18 @@ class _TvRootState extends State<TvRoot> {
     return _verified && st == 'CONNECTED';
   }
 
+  bool get _busy =>
+      _phase == TvPhase.finding ||
+      _phase == TvPhase.connecting ||
+      _phase == TvPhase.recovering;
+
   @override
   void initState() {
     super.initState();
+    _spin = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    );
     _init();
   }
 
@@ -145,6 +155,9 @@ class _TvRootState extends State<TvRoot> {
           _loggedIn = true;
           _booting = false;
         });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _connectFocus.requestFocus();
+        });
         return;
       }
     }
@@ -157,6 +170,7 @@ class _TvRootState extends State<TvRoot> {
   @override
   void dispose() {
     _recoverTimer?.cancel();
+    _spin.dispose();
     _userCtrl.dispose();
     _passCtrl.dispose();
     _userFocus.dispose();
@@ -173,7 +187,7 @@ class _TvRootState extends State<TvRoot> {
     _coreState = status.state;
     final st = (status.state ?? '').toUpperCase();
 
-    if (st.contains('DISCONNECT') || st == 'IDLE' || st == 'STOPPED') {
+    if (st.contains('DISCONNECT') || st == 'IDLE' || st == 'STOPPED' || st == 'NONE') {
       setState(() {
         _verified = false;
         _activePing = -1;
@@ -182,7 +196,12 @@ class _TvRootState extends State<TvRoot> {
           _statusLine = _userWantsOn ? 'در حال بازیابی اتصال…' : 'قطع شد';
         }
       });
-      if (_userWantsOn) _scheduleRecover('core_disconnect');
+      if (_userWantsOn) {
+        _spin.repeat();
+        _scheduleRecover('core_disconnect');
+      } else {
+        _spin.stop();
+      }
       return;
     }
 
@@ -192,11 +211,10 @@ class _TvRootState extends State<TvRoot> {
   }
 
   Future<void> _verifyTunnel() async {
-    // تأیید سبک: تأخیر سرور متصل از هسته
     try {
       final d = await _v2ray
           .getConnectedServerDelay(url: kPingUrl)
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 6));
       if (!mounted) return;
       if (d >= 0 && d < 15000) {
         setState(() {
@@ -205,15 +223,29 @@ class _TvRootState extends State<TvRoot> {
           _phase = TvPhase.connected;
           _statusLine = 'متصل هستید';
         });
+        _spin.repeat(); // چرخش آرام بعد از اتصال
+        _spin.duration = const Duration(seconds: 8);
         return;
       }
     } catch (_) {}
     if (!mounted) return;
+    // اگر هسته CONNECTED داد ولی delay نگرفت، باز هم وصل در نظر بگیر (مثل بعضی باکس‌ها)
+    final st = (_coreState ?? '').toUpperCase();
+    if (st == 'CONNECTED' && _userWantsOn) {
+      setState(() {
+        _verified = true;
+        _phase = TvPhase.connected;
+        _statusLine = 'متصل هستید';
+      });
+      _spin.duration = const Duration(seconds: 8);
+      _spin.repeat();
+      return;
+    }
     if (_userWantsOn) {
       setState(() {
         _verified = false;
         _phase = TvPhase.recovering;
-        _statusLine = 'اتصال تأیید نشد — تلاش مجدد…';
+        _statusLine = 'اتصال تأیید نشد — سرور بعدی…';
       });
       _scheduleRecover('verify_fail');
     }
@@ -222,11 +254,11 @@ class _TvRootState extends State<TvRoot> {
   void _scheduleRecover(String reason) {
     _recoverTimer?.cancel();
     final gen = ++_recoverGen;
-    _recoverTimer = Timer(const Duration(seconds: 3), () async {
+    _recoverTimer = Timer(const Duration(seconds: 2), () async {
       if (!mounted || gen != _recoverGen || !_userWantsOn) return;
       await _smartConnect(isRecovery: true);
     });
-    debugPrint('tv recover scheduled: $reason');
+    debugPrint('tv recover: $reason');
   }
 
   Future<bool> _login(String username, String password, {bool silent = false}) async {
@@ -248,7 +280,8 @@ class _TvRootState extends State<TvRoot> {
       final data = json.decode(res.body);
       if (data is! Map || data['ok'] != true) {
         if (!silent) {
-          setState(() => _loginError = '${data['msg'] ?? 'نام کاربری یا رمز اشتباه است'}');
+          setState(() =>
+              _loginError = '${data['msg'] ?? 'نام کاربری یا رمز اشتباه است'}');
         }
         return false;
       }
@@ -302,6 +335,7 @@ class _TvRootState extends State<TvRoot> {
   Future<void> _logout() async {
     _userWantsOn = false;
     _recoverTimer?.cancel();
+    _spin.stop();
     try {
       await _v2ray.stopV2Ray();
     } catch (_) {}
@@ -324,6 +358,74 @@ class _TvRootState extends State<TvRoot> {
     });
   }
 
+  /// آماده‌سازی کانفیگ مثل موبایل (inbound محلی + sniffing)
+  String _ensureLocalHttpInbound(String configJson) {
+    try {
+      final decoded = jsonDecode(configJson);
+      if (decoded is! Map) return configJson;
+      final map = Map<String, dynamic>.from(decoded);
+      final inbounds = <dynamic>[];
+      if (map['inbounds'] is List) {
+        inbounds.addAll(List<dynamic>.from(map['inbounds'] as List));
+      }
+      bool hasHttp = false;
+      bool hasSocks = false;
+      for (final ib in inbounds) {
+        if (ib is! Map) continue;
+        final proto = '${ib['protocol'] ?? ''}'.toLowerCase();
+        final port = ib['port'];
+        if (proto == 'http' && (port == 10809 || port == '10809')) hasHttp = true;
+        if (proto == 'socks') hasSocks = true;
+      }
+      if (!hasHttp) {
+        inbounds.add({
+          'tag': 'http-in-jet',
+          'port': 10809,
+          'listen': '127.0.0.1',
+          'protocol': 'http',
+          'settings': {'timeout': 0, 'allowTransparent': false},
+          'sniffing': {
+            'enabled': true,
+            'destOverride': ['http', 'tls', 'quic'],
+            'routeOnly': false,
+          },
+        });
+      }
+      if (!hasSocks) {
+        inbounds.add({
+          'tag': 'socks-in-jet',
+          'port': 10808,
+          'listen': '127.0.0.1',
+          'protocol': 'socks',
+          'settings': {'auth': 'noauth', 'udp': true},
+          'sniffing': {
+            'enabled': true,
+            'destOverride': ['http', 'tls', 'quic'],
+            'routeOnly': false,
+          },
+        });
+      }
+      for (var i = 0; i < inbounds.length; i++) {
+        final ib = inbounds[i];
+        if (ib is! Map) continue;
+        final m = Map<String, dynamic>.from(ib);
+        final sniff = m['sniffing'];
+        if (sniff is! Map || sniff['enabled'] != true) {
+          m['sniffing'] = {
+            'enabled': true,
+            'destOverride': ['http', 'tls', 'quic'],
+            'routeOnly': false,
+          };
+          inbounds[i] = m;
+        }
+      }
+      map['inbounds'] = inbounds;
+      return jsonEncode(map);
+    } catch (_) {
+      return configJson;
+    }
+  }
+
   String _prepareConfig(String raw) {
     final s = raw.trim();
     if (s.isEmpty) return s;
@@ -331,7 +433,8 @@ class _TvRootState extends State<TvRoot> {
       try {
         final decoded = jsonDecode(s);
         if (decoded is Map) {
-          return jsonEncode(Map<String, dynamic>.from(decoded));
+          return _ensureLocalHttpInbound(
+              jsonEncode(Map<String, dynamic>.from(decoded)));
         }
       } catch (_) {}
       return s;
@@ -342,7 +445,8 @@ class _TvRootState extends State<TvRoot> {
         s.startsWith('ss://')) {
       try {
         final parsed = V2ray.parseFromURL(s);
-        return parsed.getFullConfiguration();
+        final full = parsed.getFullConfiguration();
+        return _ensureLocalHttpInbound(full);
       } catch (_) {
         return s;
       }
@@ -356,7 +460,7 @@ class _TvRootState extends State<TvRoot> {
       if (cfg.isEmpty) return -2;
       final d = await _v2ray
           .getServerDelay(config: cfg, url: kPingUrl)
-          .timeout(const Duration(milliseconds: 4500));
+          .timeout(const Duration(milliseconds: 5000));
       if (d < 0 || d > 12000) return -2;
       return d;
     } catch (_) {
@@ -383,16 +487,30 @@ class _TvRootState extends State<TvRoot> {
     await Future.wait(List.generate(n, (_) => worker()));
   }
 
+  /// پینگ همه سرورها + مرتب‌سازی بهینه
   Future<void> _pingAll() async {
-    await _mapConcurrent(_servers, 6, (s) async {
+    _pingedCount = 0;
+    final total = _servers.length;
+    if (mounted) {
+      setState(() {
+        _statusLine = 'بررسی سرورها ۰ از $total…';
+      });
+    }
+    await _mapConcurrent(_servers, 8, (s) async {
       final p = await _realPing(s);
       s.ping = p;
+      _pingedCount++;
+      if (mounted) {
+        setState(() {
+          _statusLine = 'بررسی سرورها $_pingedCount از $total…';
+        });
+      }
     });
+    // امتیاز: پینگ واقعی؛ زیر ۳۰ms مشکوک (CDN دروغین)
     _servers.sort((a, b) {
-      // پایداری: پینگ خیلی پایین مشکوک را عقب‌تر
       int score(TvServer s) {
         if (s.ping <= 0) return 999999;
-        if (s.ping < 30) return 5000 + s.ping;
+        if (s.ping < 30) return 8000 + s.ping;
         return s.ping;
       }
 
@@ -409,16 +527,18 @@ class _TvRootState extends State<TvRoot> {
       if (mounted) {
         setState(() {
           _phase = TvPhase.idle;
-          _statusLine = 'مجوز VPN تأیید نشد — با ریموت OK را بزنید';
+          _statusLine = 'مجوز VPN تأیید نشد — OK را بزنید';
+          _userWantsOn = false;
         });
+        _spin.stop();
       }
       return false;
     }
-    // تونل کامل دستگاه — بدون blockedApps
+    // تونل کامل — لیست خالی = همه ترافیک
     await _v2ray.startV2Ray(
       remark: s.name,
       config: cfg,
-      blockedApps: null,
+      blockedApps: const <String>[],
       proxyOnly: false,
       notificationDisconnectButtonName: 'قطع',
     );
@@ -439,6 +559,7 @@ class _TvRootState extends State<TvRoot> {
             _statusLine = 'سروری در دسترس نیست';
             _userWantsOn = false;
           });
+          _spin.stop();
           return;
         }
       } else {
@@ -448,47 +569,71 @@ class _TvRootState extends State<TvRoot> {
 
     setState(() {
       _phase = isRecovery ? TvPhase.recovering : TvPhase.finding;
-      _statusLine = isRecovery
-          ? 'در حال بازیابی اتصال…'
-          : 'در حال یافتن بهترین سرور…';
+      _statusLine =
+          isRecovery ? 'در حال بازیابی…' : 'در حال یافتن بهترین سرور…';
       _verified = false;
     });
+    _spin.duration = const Duration(seconds: 2);
+    _spin.repeat();
 
     try {
       await _v2ray.stopV2Ray();
     } catch (_) {}
 
+    // همه سرورها پینگ می‌شوند
     await _pingAll();
     final alive = _servers.where((s) => s.ping > 0).toList();
-    final candidates = alive.isNotEmpty ? alive : List<TvServer>.from(_servers);
+    // اگر هیچ پینگ زنده‌ای نبود، همه را به ترتیب امتحان کن
+    final tryList = alive.isNotEmpty ? alive : List<TvServer>.from(_servers);
 
-    if (candidates.isEmpty) {
+    if (tryList.isEmpty) {
       setState(() {
         _phase = TvPhase.idle;
-        _statusLine = 'سرور زنده‌ای پیدا نشد';
+        _statusLine = 'سروری یافت نشد';
         _userWantsOn = false;
       });
+      _spin.stop();
       return;
     }
 
-    // حداکثر چند سرور اول را امتحان کن
-    final tryList = candidates.take(5).toList();
+    final aliveN = alive.length;
+    if (mounted) {
+      setState(() {
+        _statusLine = aliveN > 0
+            ? '$aliveN سرور زنده — اتصال به بهترین…'
+            : 'پینگ ناموفق — تلاش مستقیم روی همه…';
+      });
+    }
+
+    // همهٔ کاندیدها را به‌ترتیب کیفیت امتحان کن (نه فقط ۵ تا)
     for (var i = 0; i < tryList.length; i++) {
       if (!_userWantsOn || !mounted) return;
       final s = tryList[i];
+      final idx = _servers.indexOf(s);
       setState(() {
-        _selected = _servers.indexOf(s).clamp(0, _servers.length - 1);
+        _selected = idx >= 0 ? idx : 0;
         _phase = TvPhase.connecting;
-        _statusLine = 'در حال اتصال… (${i + 1}/${tryList.length})';
+        final pingTxt = s.ping > 0 ? ' · ${s.ping}ms' : '';
+        _statusLine =
+            'اتصال ${i + 1} از ${tryList.length}$pingTxt';
       });
       try {
         final started = await _startServer(s);
-        if (!started) continue;
-        // منتظر verify از onStatus / timeout
-        for (var t = 0; t < 20; t++) {
+        if (!started) {
+          if (!_userWantsOn) return;
+          continue;
+        }
+        // تا ~۱۰ ثانیه منتظر CONNECTED + verify
+        for (var t = 0; t < 25; t++) {
           await Future.delayed(const Duration(milliseconds: 400));
           if (!mounted || !_userWantsOn) return;
           if (_isOn) return;
+          final st = (_coreState ?? '').toUpperCase();
+          if (st == 'CONNECTED' && !_verified) {
+            // فرصت به verify
+            await Future.delayed(const Duration(milliseconds: 500));
+            if (_isOn) return;
+          }
         }
         try {
           await _v2ray.stopV2Ray();
@@ -508,15 +653,12 @@ class _TvRootState extends State<TvRoot> {
         _statusLine = 'اتصال برقرار نشد — دوباره تلاش کنید';
         _userWantsOn = false;
       });
+      _spin.stop();
     }
   }
 
   Future<void> _toggle() async {
-    if (_phase == TvPhase.finding ||
-        _phase == TvPhase.connecting ||
-        _phase == TvPhase.recovering) {
-      return;
-    }
+    if (_busy) return;
     if (_isOn || _phase == TvPhase.connected) {
       _userWantsOn = false;
       _recoverTimer?.cancel();
@@ -531,35 +673,11 @@ class _TvRootState extends State<TvRoot> {
           _statusLine = 'قطع شد';
         });
       }
+      _spin.stop();
       return;
     }
     _userWantsOn = true;
     await _smartConnect();
-  }
-
-  String get _buttonLabel {
-    switch (_phase) {
-      case TvPhase.finding:
-        return 'در حال یافتن بهترین سرور…';
-      case TvPhase.connecting:
-        return 'در حال اتصال…';
-      case TvPhase.connected:
-        return _isOn ? 'متصل هستید — قطع اتصال' : 'در حال اتصال…';
-      case TvPhase.recovering:
-        return 'در حال بازیابی اتصال…';
-      case TvPhase.idle:
-        return 'اتصال به JET VPN';
-    }
-  }
-
-  Color get _buttonColor {
-    if (_isOn) return const Color(0xFF2DD4BF);
-    if (_phase == TvPhase.finding ||
-        _phase == TvPhase.connecting ||
-        _phase == TvPhase.recovering) {
-      return const Color(0xFF38BDF8);
-    }
-    return const Color(0xFF6366F1);
   }
 
   // ---------- UI ----------
@@ -568,12 +686,21 @@ class _TvRootState extends State<TvRoot> {
   Widget build(BuildContext context) {
     if (_booting) {
       return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+        body: Center(child: CircularProgressIndicator(color: kCyan)),
       );
     }
     return Scaffold(
-      body: SafeArea(
-        child: _loggedIn ? _buildHome() : _buildLogin(),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF0A0E1A), Color(0xFF0D1B2A), Color(0xFF0A0E1A)],
+          ),
+        ),
+        child: SafeArea(
+          child: _loggedIn ? _buildHome() : _buildLogin(),
+        ),
       ),
     );
   }
@@ -587,27 +714,20 @@ class _TvRootState extends State<TvRoot> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: Image.network(
-                  kLogoUrl,
-                  width: 88,
-                  height: 88,
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.rocket_launch_rounded,
-                    size: 72,
-                    color: Color(0xFF22D3EE),
-                  ),
-                ),
-              ),
+              _logo(96),
               const SizedBox(height: 16),
               const Text(
                 'JET VPN TV',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: kCyan,
+                  letterSpacing: 1.2,
+                ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               Text(
-                'ورود با حساب ربات · نسخه $kAppVersion',
+                'ورود با حساب ربات · $kAppVersion',
                 style: const TextStyle(color: Colors.white54, fontSize: 14),
               ),
               const SizedBox(height: 28),
@@ -630,7 +750,9 @@ class _TvRootState extends State<TvRoot> {
                   focusNode: FocusNode(skipTraversal: true),
                   onPressed: () => setState(() => _obscure = !_obscure),
                   icon: Icon(
-                    _obscure ? Icons.visibility_rounded : Icons.visibility_off_rounded,
+                    _obscure
+                        ? Icons.visibility_rounded
+                        : Icons.visibility_off_rounded,
                     color: Colors.white54,
                   ),
                 ),
@@ -647,7 +769,7 @@ class _TvRootState extends State<TvRoot> {
               _FocusBtn(
                 focusNode: _loginBtnFocus,
                 onPressed: _busyLogin ? null : _doLogin,
-                background: const Color(0xFF22D3EE),
+                background: kCyan,
                 foreground: Colors.black87,
                 minWidth: 280,
                 minHeight: 56,
@@ -659,7 +781,8 @@ class _TvRootState extends State<TvRoot> {
                       )
                     : const Text(
                         'ورود',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold),
                       ),
               ),
               const SizedBox(height: 12),
@@ -668,6 +791,35 @@ class _TvRootState extends State<TvRoot> {
                 style: TextStyle(color: Colors.white38, fontSize: 13),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _logo(double size) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: kCyan.withOpacity(0.35),
+            blurRadius: 24,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: ClipOval(
+        child: Image.network(
+          kLogoUrl,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: kCard,
+            child: Icon(Icons.rocket_launch_rounded, size: size * 0.5, color: kCyan),
           ),
         ),
       ),
@@ -699,14 +851,14 @@ class _TvRootState extends State<TvRoot> {
         style: const TextStyle(fontSize: 18),
         decoration: InputDecoration(
           labelText: label,
-          prefixIcon: Icon(icon),
+          prefixIcon: Icon(icon, color: kCyan.withOpacity(0.8)),
           suffixIcon: trailing,
           filled: true,
-          fillColor: const Color(0xFF151C2E),
+          fillColor: kCard,
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: Color(0xFF22D3EE), width: 2),
+            borderSide: const BorderSide(color: kCyan, width: 2),
           ),
         ),
         onSubmitted: (_) => next.requestFocus(),
@@ -718,37 +870,26 @@ class _TvRootState extends State<TvRoot> {
     final name = _servers.isEmpty
         ? '—'
         : _servers[_selected.clamp(0, _servers.length - 1)].name;
-    final busy = _phase == TvPhase.finding ||
-        _phase == TvPhase.connecting ||
-        _phase == TvPhase.recovering;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 28),
+      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
       child: Column(
         children: [
           Row(
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.network(
-                  kLogoUrl,
-                  width: 48,
-                  height: 48,
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.rocket_launch_rounded,
-                    color: Color(0xFF22D3EE),
-                    size: 40,
-                  ),
-                ),
-              ),
+              _logo(48),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'JET VPN TV',
-                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                      'JET VPN',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: kCyan,
+                      ),
                     ),
                     Text(
                       _user ?? '',
@@ -760,73 +901,52 @@ class _TvRootState extends State<TvRoot> {
               _FocusBtn(
                 focusNode: _logoutFocus,
                 onPressed: _logout,
-                background: const Color(0xFF1E293B),
+                background: kCard,
                 foreground: Colors.white70,
-                minWidth: 120,
+                minWidth: 110,
                 minHeight: 44,
                 child: const Text('خروج', style: TextStyle(fontSize: 15)),
               ),
             ],
           ),
-          const Spacer(),
-          _FocusBtn(
+          const Spacer(flex: 2),
+          // دکمه دایره‌ای اتصال
+          _CircularConnectBtn(
             focusNode: _connectFocus,
-            onPressed: busy ? null : _toggle,
-            background: _buttonColor,
-            foreground: Colors.black87,
-            minWidth: 420,
-            minHeight: 96,
-            child: busy
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Flexible(
-                        child: Text(
-                          _buttonLabel,
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  )
-                : Text(
-                    _buttonLabel,
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
+            onPressed: _busy ? null : _toggle,
+            isOn: _isOn,
+            busy: _busy,
+            spin: _spin,
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 28),
           Text(
-            _statusLine,
-            style: const TextStyle(fontSize: 16, color: Colors.white70),
+            _buttonHint,
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              color: _isOn ? kTeal : Colors.white,
+            ),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 10),
           Text(
+            _statusLine,
+            style: const TextStyle(fontSize: 15, color: Colors.white60),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
             _activePing > 0
-                ? 'سرور: $name  ·  پینگ: $_activePing ms'
-                : 'سرور: $name',
-            style: const TextStyle(fontSize: 14, color: Colors.white38),
+                ? '$name  ·  $_activePing ms'
+                : name,
+            style: const TextStyle(fontSize: 13, color: Colors.white38),
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-          const Spacer(),
+          const Spacer(flex: 2),
           const Text(
-            'تونل کامل دستگاه · انتخاب خودکار بهترین سرور',
+            'تونل کامل · بررسی همه سرورها · انتخاب هوشمند',
             style: TextStyle(color: Colors.white30, fontSize: 13),
           ),
           const SizedBox(height: 4),
@@ -838,9 +958,159 @@ class _TvRootState extends State<TvRoot> {
       ),
     );
   }
+
+  String get _buttonHint {
+    switch (_phase) {
+      case TvPhase.finding:
+        return 'در حال یافتن بهترین سرور…';
+      case TvPhase.connecting:
+        return 'در حال اتصال…';
+      case TvPhase.connected:
+        return _isOn ? 'متصل — برای قطع OK بزنید' : 'در حال اتصال…';
+      case TvPhase.recovering:
+        return 'در حال بازیابی…';
+      case TvPhase.idle:
+        return 'برای اتصال OK بزنید';
+    }
+  }
 }
 
-/// دکمه با فوکوس واضح برای ریموت
+/// دکمه دایره‌ای برند جت با فوکوس ریموت
+class _CircularConnectBtn extends StatefulWidget {
+  final FocusNode focusNode;
+  final VoidCallback? onPressed;
+  final bool isOn;
+  final bool busy;
+  final AnimationController spin;
+
+  const _CircularConnectBtn({
+    required this.focusNode,
+    required this.onPressed,
+    required this.isOn,
+    required this.busy,
+    required this.spin,
+  });
+
+  @override
+  State<_CircularConnectBtn> createState() => _CircularConnectBtnState();
+}
+
+class _CircularConnectBtnState extends State<_CircularConnectBtn> {
+  @override
+  Widget build(BuildContext context) {
+    final onColor = widget.isOn ? kTeal : kCyan;
+    final deep = widget.isOn ? kTealDeep : kCyanDeep;
+
+    return Focus(
+      focusNode: widget.focusNode,
+      onKeyEvent: (node, event) {
+        if (widget.onPressed == null) return KeyEventResult.ignored;
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.select ||
+                event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.space)) {
+          widget.onPressed!();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Builder(
+        builder: (context) {
+          final focused = Focus.of(context).hasFocus;
+          return AnimatedScale(
+            scale: focused ? 1.06 : 1.0,
+            duration: const Duration(milliseconds: 140),
+            child: GestureDetector(
+              onTap: widget.onPressed,
+              child: SizedBox(
+                width: 168,
+                height: 168,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // حلقه چرخان
+                    if (widget.busy || widget.isOn)
+                      RotationTransition(
+                        turns: widget.spin,
+                        child: CustomPaint(
+                          size: const Size(168, 168),
+                          painter: _RingPainter(
+                            color: onColor.withOpacity(0.85),
+                            sweep: widget.isOn ? 0.35 : 0.55,
+                          ),
+                        ),
+                      ),
+                    // هاله
+                    Container(
+                      width: 168,
+                      height: 168,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: onColor.withOpacity(focused ? 0.55 : 0.28),
+                            blurRadius: focused ? 32 : 18,
+                            spreadRadius: focused ? 4 : 1,
+                          ),
+                        ],
+                      ),
+                    ),
+                    // بدنه دکمه
+                    Container(
+                      width: 140,
+                      height: 140,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [onColor, deep],
+                        ),
+                        border: Border.all(
+                          color: focused ? Colors.white : Colors.white24,
+                          width: focused ? 3.5 : 1.5,
+                        ),
+                      ),
+                      child: Icon(
+                        widget.isOn
+                            ? Icons.power_settings_new_rounded
+                            : Icons.power_settings_new_rounded,
+                        size: 56,
+                        color: Colors.black.withOpacity(0.85),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _RingPainter extends CustomPainter {
+  final Color color;
+  final double sweep;
+  _RingPainter({required this.color, this.sweep = 0.4});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromLTWH(4, 4, size.width - 8, size.height - 8);
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(rect, -1.2, sweep * 6.28, false, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _RingPainter old) =>
+      old.color != color || old.sweep != sweep;
+}
+
 class _FocusBtn extends StatefulWidget {
   final FocusNode focusNode;
   final VoidCallback? onPressed;
@@ -888,23 +1158,24 @@ class _FocusBtnState extends State<_FocusBtn> {
             duration: const Duration(milliseconds: 120),
             child: Material(
               color: widget.background,
-              borderRadius: BorderRadius.circular(20),
-              elevation: focused ? 10 : 2,
+              borderRadius: BorderRadius.circular(16),
+              elevation: focused ? 8 : 2,
               child: InkWell(
                 onTap: widget.onPressed,
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(16),
                 child: Container(
                   constraints: BoxConstraints(
                     minWidth: widget.minWidth,
                     minHeight: widget.minHeight,
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: focused ? Colors.white : Colors.transparent,
-                      width: 3,
+                      color: focused ? kCyan : Colors.transparent,
+                      width: 2.5,
                     ),
                   ),
                   child: DefaultTextStyle(
