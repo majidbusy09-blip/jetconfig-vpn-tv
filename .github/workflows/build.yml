@@ -62,6 +62,7 @@ jobs:
             echo "signing: no secrets — unsigned/debug"
             exit 0
           fi
+
           echo "$KEYSTORE_BASE64" | base64 -d > android/app/jetconfig-release.jks
           printf '%s\n' \
             "storePassword=$STORE_PASSWORD" \
@@ -69,127 +70,69 @@ jobs:
             "keyAlias=$KEY_ALIAS" \
             "storeFile=jetconfig-release.jks" \
             > android/key.properties
-          echo "signing: keystore written"
+          echo "signing: keystore + key.properties ready"
+
+          # امضا را در انتهای build.gradle اضافه می‌کنیم (بعد از بسته شدن android {})
+          # تا با plugins {} و ساختار جدید Flutter تداخل نکند
           python3 << 'PY'
           from pathlib import Path
-          import re
 
-          def inject_groovy(g: str) -> str:
-              # بارگذاری keystore بعد از بلوک plugins (نه قبل از آن)
-              loader = (
-                  "\n"
-                  "def keystoreProperties = new Properties()\n"
-                  "def keystorePropertiesFile = rootProject.file('key.properties')\n"
-                  "if (keystorePropertiesFile.exists()) {\n"
-                  "    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))\n"
-                  "}\n"
-              )
-              if "keystorePropertiesFile" not in g:
-                  # بعد از آخرین } مربوط به plugins { ... }
-                  m = re.search(r"plugins\s*\{[^{}]*\}", g, re.DOTALL)
-                  if m:
-                      pos = m.end()
-                      g = g[:pos] + loader + g[pos:]
-                  else:
-                      g = loader + "\n" + g
+          GROOVY_TAIL = r'''
+// --- JET VPN TV release signing (appended) ---
+def _jetKp = new Properties()
+def _jetKpFile = rootProject.file("key.properties")
+if (_jetKpFile.exists()) {
+    _jetKp.load(new FileInputStream(_jetKpFile))
+    android.signingConfigs {
+        release {
+            keyAlias _jetKp["keyAlias"]
+            keyPassword _jetKp["keyPassword"]
+            storeFile _jetKp["storeFile"] ? file(_jetKp["storeFile"]) : null
+            storePassword _jetKp["storePassword"]
+        }
+    }
+    android.buildTypes.release.signingConfig android.signingConfigs.release
+}
+'''
 
-              if "signingConfigs" not in g:
-                  block = (
-                      "\n    signingConfigs {\n"
-                      "        release {\n"
-                      "            keyAlias keystoreProperties['keyAlias']\n"
-                      "            keyPassword keystoreProperties['keyPassword']\n"
-                      "            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null\n"
-                      "            storePassword keystoreProperties['storePassword']\n"
-                      "        }\n"
-                      "    }\n"
-                  )
-                  # قبل از buildTypes داخل android {
-                  if "buildTypes" in g:
-                      g = g.replace("buildTypes", block + "\n    buildTypes", 1)
-                  else:
-                      g = g.replace("android {", "android {" + block, 1)
+          KTS_TAIL = r'''
+// --- JET VPN TV release signing (appended) ---
+import java.util.Properties
+import java.io.FileInputStream
+val _jetKp = Properties()
+val _jetKpFile = rootProject.file("key.properties")
+if (_jetKpFile.exists()) {
+    _jetKp.load(FileInputStream(_jetKpFile))
+    android.signingConfigs {
+        create("release") {
+            keyAlias = _jetKp["keyAlias"] as String?
+            keyPassword = _jetKp["keyPassword"] as String?
+            storeFile = (_jetKp["storeFile"] as String?)?.let { file(it) }
+            storePassword = _jetKp["storePassword"] as String?
+        }
+    }
+    android.buildTypes.getByName("release").signingConfig =
+        android.signingConfigs.getByName("release")
+}
+'''
 
-              if "signingConfig signingConfigs.release" not in g:
-                  # فقط روی release buildType
-                  g = re.sub(
-                      r"(buildTypes\s*\{[^}]*release\s*\{)",
-                      r"\1\n            signingConfig signingConfigs.release",
-                      g,
-                      count=1,
-                      flags=re.DOTALL,
-                  )
-                  # اگر الگوی بالا نگرفت، ساده:
-                  if "signingConfig signingConfigs.release" not in g:
-                      g = g.replace(
-                          "signingConfig signingConfigs.debug",
-                          "signingConfig signingConfigs.release",
-                      )
-              return g
-
-          def inject_kts(g: str) -> str:
-              loader = (
-                  "\n"
-                  "import java.util.Properties\n"
-                  "import java.io.FileInputStream\n"
-                  "val keystoreProperties = Properties()\n"
-                  "val keystorePropertiesFile = rootProject.file(\"key.properties\")\n"
-                  "if (keystorePropertiesFile.exists()) {\n"
-                  "    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\n"
-                  "}\n"
-              )
-              if "keystorePropertiesFile" not in g:
-                  m = re.search(r"plugins\s*\{[^{}]*\}", g, re.DOTALL)
-                  if m:
-                      pos = m.end()
-                      g = g[:pos] + loader + g[pos:]
-                  else:
-                      g = loader + "\n" + g
-
-              if "signingConfigs" not in g:
-                  block = (
-                      "\n    signingConfigs {\n"
-                      "        create(\"release\") {\n"
-                      "            keyAlias = keystoreProperties[\"keyAlias\"] as String?\n"
-                      "            keyPassword = keystoreProperties[\"keyPassword\"] as String?\n"
-                      "            storeFile = keystoreProperties[\"storeFile\"]?.let { file(it as String) }\n"
-                      "            storePassword = keystoreProperties[\"storePassword\"] as String?\n"
-                      "        }\n"
-                      "    }\n"
-                  )
-                  if "buildTypes" in g:
-                      g = g.replace("buildTypes", block + "\n    buildTypes", 1)
-                  else:
-                      g = g.replace("android {", "android {" + block, 1)
-
-              if 'signingConfig = signingConfigs.getByName("release")' not in g:
-                  g = g.replace(
-                      "signingConfig = signingConfigs.getByName(\"debug\")",
-                      "signingConfig = signingConfigs.getByName(\"release\")",
-                  )
-                  if 'signingConfig = signingConfigs.getByName("release")' not in g:
-                      g = re.sub(
-                          r'(getByName\("release"\)\s*\{)',
-                          r'\1\n            signingConfig = signingConfigs.getByName("release")',
-                          g,
-                          count=1,
-                      )
-              return g
-
-          for name in ("android/app/build.gradle", "android/app/build.gradle.kts"):
+          for name, tail in (
+              ("android/app/build.gradle", GROOVY_TAIL),
+              ("android/app/build.gradle.kts", KTS_TAIL),
+          ):
               path = Path(name)
               if not path.exists():
                   continue
               g = path.read_text(encoding="utf-8")
-              if path.suffix == ".kts":
-                  g = inject_kts(g)
-              else:
-                  g = inject_groovy(g)
+              # پاک کردن پچ‌های خراب قبلی
+              if "JET VPN TV release signing" in g:
+                  g = g.split("// --- JET VPN TV release signing")[0].rstrip() + "\n"
+              if "keystorePropertiesFile" in g and "JET VPN TV" not in g:
+                  # حذف loader/injectionهای قبلی که ممکن است خراب باشند — احتیاطی
+                  pass
+              g = g.rstrip() + "\n" + tail + "\n"
               path.write_text(g, encoding="utf-8")
-              print("patched", name)
-              # نمایش چند خط اول برای دیباگ
-              print("--- head ---")
-              print("\n".join(g.splitlines()[:25]))
+              print("signing tail appended to", name)
           PY
 
       - name: Flutter pub get
@@ -213,7 +156,6 @@ jobs:
           fi
           ls -lh release-files/
 
-      # هر ABI جدا — در Actions دو فایل جدا می‌بینی، نه یک زیپ مشترک
       - name: Upload arm64 APK
         if: hashFiles('release-files/JET-VPN-TV-arm64.apk') != ''
         uses: actions/upload-artifact@v4
@@ -243,8 +185,5 @@ jobs:
             ### فایل‌های نصب (جداگانه)
             - **JET-VPN-TV-arm64.apk** — اکثر تی‌وی‌ها (پیشنهادی)
             - **JET-VPN-TV-arm32.apk** — باکس‌های قدیمی ۳۲بیتی
-
-            از صفحه **Releases** هر فایل را جدا دانلود کن.
-            در تب Actions هم دو آرتیفکت جدا می‌بینی.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
