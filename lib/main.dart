@@ -11,12 +11,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.4';
+const String kAppVersion = 'tv-1.0.5';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 104;
+const int kVersionCode = 105;
 
 // رنگ‌های برند جت
 const Color kBg = Color(0xFF0A0E1A);
@@ -121,7 +121,10 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   bool get _isOn {
     final st = (_coreState ?? '').toUpperCase();
-    return _verified && st == 'CONNECTED';
+    if (_verified && (st.contains('CONNECT') || st == 'CONNECTED')) return true;
+    // بعضی باکس‌ها state دقیق نمی‌فرستند
+    if (_verified && _phase == TvPhase.connected && _userWantsOn) return true;
+    return false;
   }
 
   bool get _busy =>
@@ -136,6 +139,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       vsync: this,
       duration: const Duration(seconds: 2),
     );
+    void showKb() {
+      SystemChannels.textInput.invokeMethod('TextInput.show');
+    }
+    _userFocus.addListener(() {
+      if (_userFocus.hasFocus) showKb();
+    });
+    _passFocus.addListener(() {
+      if (_passFocus.hasFocus) showKb();
+    });
     _init();
   }
 
@@ -370,6 +382,16 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                 }),
                 const SizedBox(height: 8),
                 TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _showAddProfileDialog();
+                  },
+                  child: const Text(
+                    '＋ افزودن اشتراک جدید',
+                    style: TextStyle(color: kCyan, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                TextButton(
                   onPressed: () => Navigator.pop(ctx),
                   child: const Text('بستن'),
                 ),
@@ -381,6 +403,131 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     );
   }
 
+
+
+  Future<void> _showAddProfileDialog() async {
+    final uCtrl = TextEditingController();
+    final pCtrl = TextEditingController();
+    final uFocus = FocusNode();
+    final pFocus = FocusNode();
+    var obscure = true;
+    String? err;
+    var busy = false;
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              backgroundColor: kCard,
+              title: const Text('افزودن اشتراک', style: TextStyle(color: kCyan)),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: uCtrl,
+                      focusNode: uFocus,
+                      autofocus: true,
+                      keyboardType: TextInputType.visiblePassword,
+                      textInputAction: TextInputAction.next,
+                      style: const TextStyle(fontSize: 18),
+                      decoration: const InputDecoration(
+                        labelText: 'نام کاربری',
+                        border: OutlineInputBorder(),
+                      ),
+                      onTap: () =>
+                          SystemChannels.textInput.invokeMethod('TextInput.show'),
+                      onSubmitted: (_) => pFocus.requestFocus(),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: pCtrl,
+                      focusNode: pFocus,
+                      obscureText: obscure,
+                      keyboardType: TextInputType.visiblePassword,
+                      textInputAction: TextInputAction.done,
+                      style: const TextStyle(fontSize: 18),
+                      decoration: InputDecoration(
+                        labelText: 'رمز عبور',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                              obscure ? Icons.visibility : Icons.visibility_off),
+                          onPressed: () => setLocal(() => obscure = !obscure),
+                        ),
+                      ),
+                      onTap: () =>
+                          SystemChannels.textInput.invokeMethod('TextInput.show'),
+                    ),
+                    if (err != null) ...[
+                      const SizedBox(height: 10),
+                      Text(err!,
+                          style: const TextStyle(color: Colors.redAccent)),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.pop(ctx),
+                  child: const Text('انصراف'),
+                ),
+                TextButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final u = uCtrl.text.trim();
+                          final p = pCtrl.text.trim();
+                          if (u.isEmpty || p.isEmpty) {
+                            setLocal(
+                                () => err = 'نام کاربری و رمز را وارد کنید');
+                            return;
+                          }
+                          setLocal(() {
+                            busy = true;
+                            err = null;
+                          });
+                          final ok = await _login(u, p, silent: false);
+                          if (!ctx.mounted) return;
+                          if (ok) {
+                            Navigator.pop(ctx);
+                            if (mounted) {
+                              setState(() {
+                                _loggedIn = true;
+                                _statusLine = 'اشتراک جدید فعال شد';
+                                _phase = TvPhase.idle;
+                              });
+                            }
+                          } else {
+                            setLocal(() {
+                              busy = false;
+                              err = _loginError ?? 'ورود ناموفق';
+                            });
+                          }
+                        },
+                  child: busy
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('ورود و ذخیره',
+                          style: TextStyle(color: kCyan)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    uCtrl.dispose();
+    pCtrl.dispose();
+    uFocus.dispose();
+    pFocus.dispose();
+  }
 
   Future<void> _checkUpdate({bool silent = true}) async {
     try {
@@ -551,12 +698,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _logout() async {
-    _userWantsOn = false;
-    _recoverTimer?.cancel();
-    _spin.stop();
-    try {
-      await _v2ray.stopV2Ray();
-    } catch (_) {}
+    await _forceDisconnect(reason: 'logout');
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('tv_user');
     await prefs.remove('tv_pass');
@@ -875,27 +1017,152 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
   }
 
+  Future<void> _forceDisconnect({String reason = 'user'}) async {
+    _userWantsOn = false;
+    _recoverTimer?.cancel();
+    _recoverGen++;
+    if (mounted) {
+      setState(() {
+        _phase = TvPhase.idle;
+        _verified = false;
+        _activePing = -1;
+        _coreState = 'DISCONNECTED';
+        _statusLine = 'اتصال قطع شد';
+      });
+    }
+    _spin.stop();
+    try {
+      await _v2ray.stopV2Ray().timeout(const Duration(seconds: 3));
+    } catch (e) {
+      debugPrint('stopV2Ray: $e');
+    }
+  }
+
   Future<void> _toggle() async {
-    if (_busy) return;
-    if (_isOn || _phase == TvPhase.connected) {
-      _userWantsOn = false;
-      _recoverTimer?.cancel();
-      try {
-        await _v2ray.stopV2Ray();
-      } catch (_) {}
-      if (mounted) {
-        setState(() {
-          _phase = TvPhase.idle;
-          _verified = false;
-          _activePing = -1;
-          _statusLine = 'اتصال قطع شد';
-        });
-      }
-      _spin.stop();
+    // اگر وصل هستیم یا در حال اتصال → قطع؛ وگرنه اتصال هوشمند
+    if (_isOn || _userWantsOn || _phase != TvPhase.idle) {
+      await _forceDisconnect();
       return;
     }
     _userWantsOn = true;
     await _smartConnect();
+  }
+
+  /// حالت یوتیوب بدون تبلیغ: اولویت سرور آلبانی
+  Future<void> _connectAlbaniaYoutube() async {
+    if (_busy && _phase != TvPhase.idle) {
+      await _forceDisconnect();
+    }
+    if (_servers.isEmpty && _user != null && _pass != null) {
+      setState(() {
+        _phase = TvPhase.finding;
+        _statusLine = 'دریافت فهرست سرورها…';
+      });
+      await _login(_user!, _pass!, silent: true);
+    }
+    if (_servers.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _phase = TvPhase.idle;
+          _statusLine = 'سروری در اشتراک نیست';
+        });
+      }
+      return;
+    }
+
+    bool isAlbania(TvServer s) {
+      final n = s.name.toLowerCase();
+      return n.contains('alban') ||
+          n.contains('آلبانی') ||
+          n.contains('البانی') ||
+          n.contains('🇦🇱') ||
+          n.contains(' al ') ||
+          n.startsWith('al-') ||
+          n.contains('-al-') ||
+          n.contains('tirana');
+    }
+
+    final candidates = _servers.where(isAlbania).toList();
+    if (candidates.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _phase = TvPhase.idle;
+          _statusLine =
+              'سرور آلبانی در این اشتراک پیدا نشد. از اتصال هوشمند استفاده کنید.';
+        });
+      }
+      return;
+    }
+
+    _userWantsOn = true;
+    if (mounted) {
+      setState(() {
+        _phase = TvPhase.finding;
+        _statusLine = 'یوتیوب بدون تبلیغ — سنجش سرور آلبانی…';
+      });
+    }
+    _spin.duration = const Duration(seconds: 2);
+    _spin.repeat();
+
+    await _mapConcurrent(candidates, 6, (s) async {
+      final p = await _realPing(s);
+      s.ping = p;
+    });
+
+    candidates.sort((a, b) {
+      final pa = a.ping > 0 ? a.ping : 999999;
+      final pb = b.ping > 0 ? b.ping : 999999;
+      return pa.compareTo(pb);
+    });
+
+    final alive = candidates.where((s) => s.ping > 0).toList();
+    if (alive.isEmpty) {
+      _userWantsOn = false;
+      _spin.stop();
+      if (mounted) {
+        setState(() {
+          _phase = TvPhase.idle;
+          _statusLine =
+              'سرور آلبانی الان پاسخ نداد. بعداً دوباره امتحان کنید یا اتصال هوشمند بزنید.';
+        });
+      }
+      return;
+    }
+
+    // اتصال به بهترین آلبانی
+    if (mounted) {
+      setState(() {
+        _phase = TvPhase.connecting;
+        _statusLine =
+            'اتصال به آلبانی برای یوتیوب… (${alive.first.ping} ms)';
+        final idx = _servers.indexOf(alive.first);
+        if (idx >= 0) _selected = idx;
+      });
+    }
+
+    for (final s in alive) {
+      if (!_userWantsOn) break;
+      final ok = await _startServer(s);
+      if (!ok) continue;
+      // صبر برای status
+      for (var i = 0; i < 20; i++) {
+        await Future.delayed(const Duration(milliseconds: 400));
+        if (_isOn) return;
+        if (!_userWantsOn) return;
+      }
+      try {
+        await _v2ray.stopV2Ray();
+      } catch (_) {}
+    }
+
+    if (mounted && !_isOn) {
+      _userWantsOn = false;
+      _spin.stop();
+      setState(() {
+        _phase = TvPhase.idle;
+        _statusLine = 'اتصال به سرور آلبانی برقرار نشد';
+      });
+    }
   }
 
   // ---------- UI ----------
@@ -1060,9 +1327,18 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     Widget? trailing,
   }) {
     return Focus(
+      focusNode: FocusNode(skipTraversal: true),
+      onFocusChange: (has) {
+        if (has) {
+          focus.requestFocus();
+          SystemChannels.textInput.invokeMethod('TextInput.show');
+        }
+      },
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.enter) {
+            (event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.select)) {
+          SystemChannels.textInput.invokeMethod('TextInput.show');
           next.requestFocus();
           return KeyEventResult.handled;
         }
@@ -1072,6 +1348,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         focusNode: focus,
         controller: controller,
         obscureText: obscure,
+        keyboardType: TextInputType.visiblePassword,
+        textInputAction: TextInputAction.next,
+        enableInteractiveSelection: true,
         style: const TextStyle(fontSize: 18),
         decoration: InputDecoration(
           labelText: label,
@@ -1085,6 +1364,10 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
             borderSide: const BorderSide(color: kCyan, width: 2),
           ),
         ),
+        onTap: () {
+          focus.requestFocus();
+          SystemChannels.textInput.invokeMethod('TextInput.show');
+        },
         onSubmitted: (_) => next.requestFocus(),
       ),
     );
@@ -1147,9 +1430,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           // دکمه دایره‌ای اتصال
           _CircularConnectBtn(
             focusNode: _connectFocus,
-            onPressed: _busy ? null : _toggle,
-            isOn: _isOn,
-            busy: _busy,
+            onPressed: _toggle, // قطع همیشه فعال باشد
+            isOn: _isOn || _phase == TvPhase.connected,
+            busy: _busy && !_isOn,
             spin: _spin,
           ),
           const SizedBox(height: 28),
@@ -1178,12 +1461,30 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-          const Spacer(flex: 2),
-          const Text(
-            'تونل کامل · بررسی همه سرورها · انتخاب هوشمند',
-            style: TextStyle(color: Colors.white30, fontSize: 13),
+          const SizedBox(height: 16),
+          _FocusBtn(
+            focusNode: FocusNode(),
+            onPressed: _busy ? null : _connectAlbaniaYoutube,
+            background: const Color(0xFF1A2332),
+            foreground: Colors.white,
+            minWidth: 280,
+            minHeight: 48,
+            child: const Text(
+              '▶  تماشای یوتیوب بدون تبلیغ',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
           ),
-          const SizedBox(height: 4),
+          const Spacer(flex: 1),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              '🚀 اتصال سریع و پایدار روی تلویزیون · سرور هوشمند · تونل کامل
+از ربات جت‌کانفیگ، همیشه آنلاین بمانید',
+              style: TextStyle(color: Colors.white38, fontSize: 13, height: 1.4),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 6),
           Text(
             kAppVersion,
             style: const TextStyle(color: Colors.white24, fontSize: 12),
