@@ -1,0 +1,39 @@
+JET VPN TV — راهنمای کوتاه (پروژه جدا از موبایل)
+================================================
+
+فایل‌های این پوشه:
+  main.dart      → بگذار در lib/main.dart
+  pubspec.yaml   → ریشه پروژه
+  SETUP.txt      → همین راهنما
+
+موبایل را لمس نکن. ریپو/شاخه جدا بساز (مثلاً jetconfig-vpn-tv).
+
+۱) ساخت پروژه خالی (یک‌بار روی سیستم یا Actions):
+   flutter create --org com.jetconfig.vpntv --project-name jet_vpn_tv .
+
+۲) جایگذاری:
+   lib/main.dart  ← main.dart این پوشه
+   pubspec.yaml   ← همین pubspec
+
+۳) AndroidManifest.xml (android/app/src/main/) این‌ها را اضافه کن:
+
+داخل <manifest> نزدیک بقیه uses-permission:
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-feature android:name="android.software.leanback" android:required="false"/>
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+
+داخل activity اصلی (همان launcher):
+  <intent-filter>
+    <action android:name="android.intent.action.MAIN"/>
+    <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+  </intent-filter>
+  (فیلتر LAUNCHER موبایل را هم می‌توانی نگه داری تا روی باکس هم باز شود)
+
+۴) بیلد:
+   flutter pub get
+   flutter build apk --release
+
+۵) نصب روی تی‌وی با USB یا لینک APK.
+
+رفتار اپ:
+  ورود با یوزر/رمز ربات → یک دکمه اتصال → هوشمند + تونل کامل دستگاه.
