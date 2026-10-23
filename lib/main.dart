@@ -13,12 +13,12 @@ import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.10';
+const String kAppVersion = 'tv-1.0.11';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 110;
+const int kVersionCode = 111;
 const String kApkChannel = 'arm32';
 
 // رنگ‌های برند جت
@@ -161,23 +161,33 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   Future<void> _startSplash() async {
     try {
-      final c = VideoPlayerController.asset('start.mp4');
+      final c = VideoPlayerController.asset(
+        'start.mp4',
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
       _splashVideo = c;
-      await c.initialize();
+      await c.initialize().timeout(const Duration(seconds: 8));
       if (!mounted) return;
+      // بعضی تی‌وی‌ها size=0 برمی‌گردانند تا فریم اول
       await c.setLooping(false);
       await c.setVolume(1.0);
       setState(() => _splashReady = true);
       await c.play();
-      // حداکثر ~۴.۵ ثانیه یا پایان ویدیو
+      // یک فریم جلو تا سرفیس سخت‌افزاری ساخته شود
+      try {
+        await c.seekTo(const Duration(milliseconds: 50));
+        await c.play();
+      } catch (_) {}
       c.addListener(() {
         final v = _splashVideo;
         if (v == null || !v.value.isInitialized) return;
-        if (v.value.position >= v.value.duration - const Duration(milliseconds: 200)) {
+        final dur = v.value.duration;
+        if (dur.inMilliseconds > 0 &&
+            v.value.position >= dur - const Duration(milliseconds: 250)) {
           _endSplash();
         }
       });
-      Future.delayed(const Duration(milliseconds: 4500), _endSplash);
+      Future.delayed(const Duration(milliseconds: 4800), _endSplash);
     } catch (e) {
       debugPrint('splash video: $e');
       _endSplash();
@@ -1075,33 +1085,46 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
     } catch (e) {
       debugPrint('tv apk download: $e');
-      try {
-        if (file != null && await file.exists()) {
-          // اگر ناقص بود پاک کن مگر نزدیک کامل
-          final len = await file.length();
-          if (len < 10000) await file.delete();
-        }
-      } catch (_) {}
-      if (mounted) {
+      // انصراف کاربر → client.close باعث ClientException می‌شود؛ خطا نشان نده
+      if (cancelled) {
         try {
-          Navigator.of(context, rootNavigator: true).pop();
+          if (file != null && await file.exists()) await file.delete();
         } catch (_) {}
-        setState(() => _statusLine = 'خطا در دانلود بروزرسانی');
-        await showDialog<void>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            backgroundColor: kCard,
-            title: const Text('خطای دانلود',
-                style: TextStyle(color: Colors.redAccent)),
-            content: Text('$e'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('باشه'),
-              ),
-            ],
-          ),
-        );
+        if (mounted) {
+          try {
+            Navigator.of(context, rootNavigator: true).pop();
+          } catch (_) {}
+          setState(() => _statusLine = 'دانلود لغو شد');
+        }
+      } else {
+        try {
+          if (file != null && await file.exists()) {
+            final len = await file.length();
+            if (len < 10000) await file.delete();
+          }
+        } catch (_) {}
+        if (mounted) {
+          try {
+            Navigator.of(context, rootNavigator: true).pop();
+          } catch (_) {}
+          setState(() => _statusLine = 'خطا در دانلود بروزرسانی');
+          final friendly = _friendlyDlError(e);
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: kCard,
+              title: const Text('خطای دانلود',
+                  style: TextStyle(color: Colors.redAccent)),
+              content: Text(friendly),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('باشه'),
+                ),
+              ],
+            ),
+          );
+        }
       }
     } finally {
       try {
@@ -1847,12 +1870,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
               fit: StackFit.expand,
               children: [
                 if (_splashReady && _splashVideo != null)
-                  FittedBox(
-                    fit: BoxFit.cover,
-                    child: SizedBox(
-                      width: _splashVideo!.value.size.width,
-                      height: _splashVideo!.value.size.height,
-                      child: VideoPlayer(_splashVideo!),
+                  ColoredBox(
+                    color: Colors.black,
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: (_splashVideo!.value.aspectRatio > 0.1)
+                            ? _splashVideo!.value.aspectRatio
+                            : (16 / 9),
+                        child: VideoPlayer(_splashVideo!),
+                      ),
                     ),
                   )
                 else
@@ -2227,7 +2253,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
             padding: EdgeInsets.symmetric(horizontal: 24),
             child: Text(
               '🚀 اتصال سریع و پایدار روی تلویزیون · سرور هوشمند · تونل کامل\n'
-              'از ربات جت‌کانفیگ، همیشه آنلاین بمانید',
+              'با ربات جت‌کانفیگ همیشه آنلاین بمانید',
               style: TextStyle(color: Colors.white38, fontSize: 13, height: 1.4),
               textAlign: TextAlign.center,
             ),
