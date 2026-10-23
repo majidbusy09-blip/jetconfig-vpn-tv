@@ -38,6 +38,7 @@ jobs:
             cp -f patch_tv.py /tmp/jet-tv-keep/ || true
             cp -f patch_signing.py /tmp/jet-tv-keep/ || true
             cp -f logotype.png /tmp/jet-tv-keep/ || true
+            cp -f start.mp4 /tmp/jet-tv-keep/ || true
             flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
             cp -f /tmp/jet-tv-keep/pubspec.yaml . || true
             mkdir -p lib
@@ -45,9 +46,30 @@ jobs:
             cp -f /tmp/jet-tv-keep/patch_tv.py . || true
             cp -f /tmp/jet-tv-keep/patch_signing.py . || true
             cp -f /tmp/jet-tv-keep/logotype.png . || true
+            cp -f /tmp/jet-tv-keep/start.mp4 . || true
           fi
           test -f lib/main.dart
           test -f pubspec.yaml
+
+      - name: Ensure splash video asset
+        run: |
+          set -e
+          if [ -f start.mp4 ] && [ -s start.mp4 ]; then
+            echo "start.mp4 found ($(wc -c < start.mp4) bytes)"
+          else
+            echo "start.mp4 missing — creating short H.264 placeholder so build does not fail"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+            ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=2 \
+              -f lavfi -i anullsrc=r=44100:cl=stereo \
+              -c:v libx264 -pix_fmt yuv420p -t 2 -c:a aac -shortest start.mp4
+            ls -lh start.mp4
+          fi
+          # logotype اختیاری
+          if [ ! -f logotype.png ]; then
+            echo "logotype.png missing — creating 1x1 placeholder"
+            python3 -c "import struct,zlib; open('logotype.png','wb').write(bytes.fromhex('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082'))"
+          fi
 
       - name: Patch Android for TV
         run: python3 patch_tv.py
@@ -72,7 +94,6 @@ jobs:
             exit 0
           fi
 
-          # تست باز شدن keystore قبل از بیلد
           if ! keytool -list -keystore android/app/jetconfig-release.jks \
               -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/tmp/kt.out 2>/tmp/kt.err; then
             echo "signing: KEYSTORE/PASSWORD/ALIAS invalid → skip signing (build continues unsigned)"
@@ -131,7 +152,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tv-1.0.5-${{ github.run_number }}
+          tag_name: tv-1.0.12-${{ github.run_number }}
           name: JET VPN TV ${{ github.run_number }}
           files: |
             release-files/JET-VPN-TV-arm64.apk
@@ -139,7 +160,7 @@ jobs:
           fail_on_unmatched_files: false
           body: |
             ### نصب
-            - JET-VPN-TV-arm64.apk (پیشنهادی)
-            - JET-VPN-TV-arm32.apk (قدیمی)
+            - JET-VPN-TV-arm32.apk (برای اکثر تی‌وی‌ها)
+            - JET-VPN-TV-arm64.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
