@@ -1,5 +1,6 @@
 // JET VPN TV — پروژه جدا از موبایل | تونل کامل | اتصال هوشمند
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -9,14 +10,15 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:video_player/video_player.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.8';
+const String kAppVersion = 'tv-1.0.9';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 108;
+const int kVersionCode = 109;
 
 // رنگ‌های برند جت
 const Color kBg = Color(0xFF0A0E1A);
@@ -99,6 +101,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   final _logoutFocus = FocusNode();
 
   bool _booting = true;
+  bool _showSplash = true;
+  VideoPlayerController? _splashVideo;
+  bool _splashReady = false;
   bool _loggedIn = false;
   bool _obscure = true;
   bool _busyLogin = false;
@@ -149,7 +154,41 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     _passFocus.addListener(() {
       if (_passFocus.hasFocus) showKb();
     });
+    _startSplash();
     _init();
+  }
+
+  Future<void> _startSplash() async {
+    try {
+      final c = VideoPlayerController.asset('start.mp4');
+      _splashVideo = c;
+      await c.initialize();
+      if (!mounted) return;
+      await c.setLooping(false);
+      await c.setVolume(1.0);
+      setState(() => _splashReady = true);
+      await c.play();
+      // حداکثر ~۴.۵ ثانیه یا پایان ویدیو
+      c.addListener(() {
+        final v = _splashVideo;
+        if (v == null || !v.value.isInitialized) return;
+        if (v.value.position >= v.value.duration - const Duration(milliseconds: 200)) {
+          _endSplash();
+        }
+      });
+      Future.delayed(const Duration(milliseconds: 4500), _endSplash);
+    } catch (e) {
+      debugPrint('splash video: $e');
+      _endSplash();
+    }
+  }
+
+  void _endSplash() {
+    if (!mounted || !_showSplash) return;
+    setState(() => _showSplash = false);
+    try {
+      _splashVideo?.pause();
+    } catch (_) {}
   }
 
   Future<void> _init() async {
@@ -189,6 +228,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   void dispose() {
     _recoverTimer?.cancel();
     _spin.dispose();
+    try {
+      _splashVideo?.dispose();
+    } catch (_) {}
     _userCtrl.dispose();
     _passCtrl.dispose();
     _userFocus.dispose();
@@ -1369,6 +1411,67 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    if (_showSplash) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (event is KeyDownEvent &&
+                (event.logicalKey == LogicalKeyboardKey.select ||
+                    event.logicalKey == LogicalKeyboardKey.enter ||
+                    event.logicalKey == LogicalKeyboardKey.space ||
+                    event.logicalKey == LogicalKeyboardKey.escape)) {
+              _endSplash();
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          },
+          child: GestureDetector(
+            onTap: _endSplash,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_splashReady && _splashVideo != null)
+                  FittedBox(
+                    fit: BoxFit.cover,
+                    child: SizedBox(
+                      width: _splashVideo!.value.size.width,
+                      height: _splashVideo!.value.size.height,
+                      child: VideoPlayer(_splashVideo!),
+                    ),
+                  )
+                else
+                  const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(color: kCyan),
+                        SizedBox(height: 16),
+                        Text(
+                          'JET VPN',
+                          style: TextStyle(
+                              color: kCyan, fontSize: 22, letterSpacing: 2),
+                        ),
+                      ],
+                    ),
+                  ),
+                const Positioned(
+                  bottom: 28,
+                  left: 0,
+                  right: 0,
+                  child: Text(
+                    'برای رد کردن، OK را بزنید',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white38, fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     if (_booting) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator(color: kCyan)),
@@ -1741,7 +1844,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   }
 }
 
-/// دکمه دایره‌ای برند جت با فوکوس ریموت
+/// دکمه اتصال نئونی — حس سرعت و تکنولوژی
 class _CircularConnectBtn extends StatefulWidget {
   final FocusNode focusNode;
   final VoidCallback? onPressed;
@@ -1761,11 +1864,76 @@ class _CircularConnectBtn extends StatefulWidget {
   State<_CircularConnectBtn> createState() => _CircularConnectBtnState();
 }
 
-class _CircularConnectBtnState extends State<_CircularConnectBtn> {
+class _CircularConnectBtnState extends State<_CircularConnectBtn>
+    with TickerProviderStateMixin {
+  late final AnimationController _orbit;
+  late final AnimationController _pulse;
+  late final AnimationController _glow;
+  late final AnimationController _dash;
+
+  @override
+  void initState() {
+    super.initState();
+    _orbit = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 4800),
+    )..repeat();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    )..repeat(reverse: true);
+    _glow = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat(reverse: true);
+    _dash = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2800),
+    )..repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CircularConnectBtn oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.busy && !oldWidget.busy) {
+      _orbit.duration = const Duration(milliseconds: 1600);
+      _dash.duration = const Duration(milliseconds: 900);
+      _orbit
+        ..reset()
+        ..repeat();
+      _dash
+        ..reset()
+        ..repeat();
+    } else if (widget.isOn && !oldWidget.isOn) {
+      _orbit.duration = const Duration(milliseconds: 7000);
+      _dash.duration = const Duration(milliseconds: 4500);
+      _orbit
+        ..reset()
+        ..repeat();
+      _dash
+        ..reset()
+        ..repeat();
+    } else if (!widget.busy && !widget.isOn) {
+      _orbit.duration = const Duration(milliseconds: 4800);
+      _dash.duration = const Duration(milliseconds: 2800);
+    }
+  }
+
+  @override
+  void dispose() {
+    _orbit.dispose();
+    _pulse.dispose();
+    _glow.dispose();
+    _dash.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final onColor = widget.isOn ? kTeal : kCyan;
-    final deep = widget.isOn ? kTealDeep : kCyanDeep;
+    final neon = widget.isOn ? kTeal : kCyan;
+    final neon2 =
+        widget.isOn ? const Color(0xFF7CFFB2) : const Color(0xFF5B8CFF);
+    final core = widget.isOn ? kTealDeep : kCyanDeep;
 
     return Focus(
       focusNode: widget.focusNode,
@@ -1783,72 +1951,137 @@ class _CircularConnectBtnState extends State<_CircularConnectBtn> {
       child: Builder(
         builder: (context) {
           final focused = Focus.of(context).hasFocus;
-          return AnimatedScale(
-            scale: focused ? 1.06 : 1.0,
-            duration: const Duration(milliseconds: 140),
-            child: GestureDetector(
-              onTap: widget.onPressed,
-              child: SizedBox(
-                width: 168,
-                height: 168,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // حلقه چرخان
-                    if (widget.busy || widget.isOn)
-                      RotationTransition(
-                        turns: widget.spin,
-                        child: CustomPaint(
-                          size: const Size(168, 168),
-                          painter: _RingPainter(
-                            color: onColor.withOpacity(0.85),
-                            sweep: widget.isOn ? 0.35 : 0.55,
+          return AnimatedBuilder(
+            animation:
+                Listenable.merge([_orbit, _pulse, _glow, _dash, widget.spin]),
+            builder: (context, _) {
+              final pulse = 0.92 + (_pulse.value * 0.08);
+              final glowOp = 0.22 + (_glow.value * 0.38);
+              final scale = focused ? 1.07 : 1.0;
+              return Transform.scale(
+                scale: scale,
+                child: GestureDetector(
+                  onTap: widget.onPressed,
+                  child: SizedBox(
+                    width: 200,
+                    height: 200,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          width: 200 * pulse,
+                          height: 200 * pulse,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: RadialGradient(
+                              colors: [
+                                neon.withOpacity(glowOp * 0.5),
+                                neon2.withOpacity(glowOp * 0.15),
+                                Colors.transparent,
+                              ],
+                              stops: const [0.0, 0.42, 1.0],
+                            ),
                           ),
                         ),
-                      ),
-                    // هاله
-                    Container(
-                      width: 168,
-                      height: 168,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: onColor.withOpacity(focused ? 0.55 : 0.28),
-                            blurRadius: focused ? 32 : 18,
-                            spreadRadius: focused ? 4 : 1,
+                        Transform.rotate(
+                          angle: _orbit.value * math.pi * 2,
+                          child: CustomPaint(
+                            size: const Size(188, 188),
+                            painter: _OrbitDotsPainter(
+                              color: neon.withOpacity(0.95),
+                              color2: neon2.withOpacity(0.75),
+                            ),
                           ),
-                        ],
-                      ),
-                    ),
-                    // بدنه دکمه
-                    Container(
-                      width: 140,
-                      height: 140,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [onColor, deep],
                         ),
-                        border: Border.all(
-                          color: focused ? Colors.white : Colors.white24,
-                          width: focused ? 3.5 : 1.5,
+                        Transform.rotate(
+                          angle: -_dash.value * math.pi * 2,
+                          child: CustomPaint(
+                            size: const Size(176, 176),
+                            painter: _NeonArcsPainter(
+                              color: neon,
+                              color2: neon2,
+                              active: widget.busy || widget.isOn,
+                            ),
+                          ),
                         ),
-                      ),
-                      child: Icon(
-                        widget.isOn
-                            ? Icons.power_settings_new_rounded
-                            : Icons.power_settings_new_rounded,
-                        size: 56,
-                        color: Colors.black.withOpacity(0.85),
-                      ),
+                        CustomPaint(
+                          size: const Size(158, 158),
+                          painter: _GradientRingPainter(
+                            colors: [neon, neon2, neon.withOpacity(0.15)],
+                          ),
+                        ),
+                        Container(
+                          width: 128,
+                          height: 128,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                neon.withOpacity(0.98),
+                                core,
+                                neon2.withOpacity(0.9),
+                              ],
+                              stops: const [0.0, 0.52, 1.0],
+                            ),
+                            border: Border.all(
+                              color: focused
+                                  ? Colors.white.withOpacity(0.95)
+                                  : Colors.white.withOpacity(0.35),
+                              width: focused ? 3.0 : 1.5,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: neon.withOpacity(0.55),
+                                blurRadius: 28,
+                                spreadRadius: 2,
+                              ),
+                              BoxShadow(
+                                color: neon2.withOpacity(0.35),
+                                blurRadius: 42,
+                                spreadRadius: -4,
+                              ),
+                            ],
+                          ),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              Container(
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  gradient: RadialGradient(
+                                    colors: [
+                                      Colors.white.withOpacity(0.3),
+                                      Colors.transparent,
+                                    ],
+                                    center: const Alignment(-0.45, -0.55),
+                                    radius: 0.9,
+                                  ),
+                                ),
+                              ),
+                              Icon(
+                                widget.busy && !widget.isOn
+                                    ? Icons.bolt_rounded
+                                    : Icons.power_settings_new_rounded,
+                                size: widget.busy && !widget.isOn ? 52 : 56,
+                                color: Colors.white.withOpacity(0.96),
+                                shadows: [
+                                  Shadow(
+                                    color: neon.withOpacity(0.85),
+                                    blurRadius: 18,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           );
         },
       ),
@@ -1856,26 +2089,93 @@ class _CircularConnectBtnState extends State<_CircularConnectBtn> {
   }
 }
 
-class _RingPainter extends CustomPainter {
+class _OrbitDotsPainter extends CustomPainter {
   final Color color;
-  final double sweep;
-  _RingPainter({required this.color, this.sweep = 0.4});
+  final Color color2;
+  _OrbitDotsPainter({required this.color, required this.color2});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final rect = Rect.fromLTWH(4, 4, size.width - 8, size.height - 8);
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round;
-    canvas.drawArc(rect, -1.2, sweep * 6.28, false, paint);
+    final c = Offset(size.width / 2, size.height / 2);
+    final r = size.width / 2 - 4;
+    for (var i = 0; i < 14; i++) {
+      final a = (i / 14) * math.pi * 2;
+      final op = 0.3 + (i % 3) * 0.22;
+      final paint = Paint()
+        ..color = (i.isEven ? color : color2).withOpacity(op.clamp(0.0, 1.0))
+        ..style = PaintingStyle.fill;
+      final p = Offset(c.dx + r * math.cos(a), c.dy + r * math.sin(a));
+      canvas.drawCircle(p, i % 4 == 0 ? 3.4 : 2.1, paint);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _RingPainter old) =>
-      old.color != color || old.sweep != sweep;
+  bool shouldRepaint(covariant _OrbitDotsPainter old) =>
+      old.color != color || old.color2 != color2;
 }
+
+class _NeonArcsPainter extends CustomPainter {
+  final Color color;
+  final Color color2;
+  final bool active;
+  _NeonArcsPainter({
+    required this.color,
+    required this.color2,
+    required this.active,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    final r = size.width / 2 - 6;
+    final rect = Rect.fromCircle(center: c, radius: r);
+
+    final p1 = Paint()
+      ..color = color.withOpacity(active ? 0.95 : 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = active ? 4.8 : 3.0
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, active ? 3 : 1.5);
+
+    final p2 = Paint()
+      ..color = color2.withOpacity(active ? 0.88 : 0.38)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = active ? 3.6 : 2.4
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
+
+    canvas.drawArc(rect, -0.25, 1.15, false, p1);
+    canvas.drawArc(rect, 1.9, 0.95, false, p2);
+    canvas.drawArc(rect, 3.7, 0.75, false, p1);
+  }
+
+  @override
+  bool shouldRepaint(covariant _NeonArcsPainter old) =>
+      old.active != active || old.color != color;
+}
+
+class _GradientRingPainter extends CustomPainter {
+  final List<Color> colors;
+  _GradientRingPainter({required this.colors});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    final r = size.width / 2 - 2;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..shader = SweepGradient(
+        colors: [...colors, colors.first],
+      ).createShader(Rect.fromCircle(center: c, radius: r));
+    canvas.drawCircle(c, r, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _GradientRingPainter old) => false;
+}
+
+
 
 class _FocusBtn extends StatefulWidget {
   final FocusNode focusNode;
