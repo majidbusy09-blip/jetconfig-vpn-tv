@@ -13,12 +13,13 @@ import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.9';
+const String kAppVersion = 'tv-1.0.10';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 109;
+const int kVersionCode = 110;
+const String kApkChannel = 'arm32';
 
 // رنگ‌های برند جت
 const Color kBg = Color(0xFF0A0E1A);
@@ -602,41 +603,228 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     pFocus.dispose();
   }
 
+  // ---------- بروزرسانی پایدار APK (مثل موبایل) ----------
+  static const String _kUpPath = 'tv_update_apk_path';
+  static const String _kUpVer = 'tv_update_apk_version';
+  static const String _kUpCode = 'tv_update_apk_version_code';
+  static const String _kUpChannel = 'tv_update_apk_channel';
+  static const String _kUpSize = 'tv_update_apk_size';
+  static const String _kUpUrl = 'tv_update_apk_url';
+
+  Future<Directory> _updateStorageDir() async {
+    final support = await getApplicationSupportDirectory();
+    final dir = Directory('${support.path}/updates');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+
+  Future<void> _clearPendingUpdatePrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kUpPath);
+    await prefs.remove(_kUpVer);
+    await prefs.remove(_kUpCode);
+    await prefs.remove(_kUpChannel);
+    await prefs.remove(_kUpSize);
+    await prefs.remove(_kUpUrl);
+  }
+
+  Future<void> _savePendingUpdate({
+    required String path,
+    required String version,
+    required int versionCode,
+    required String channel,
+    required int size,
+    required String url,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kUpPath, path);
+    await prefs.setString(_kUpVer, version);
+    await prefs.setInt(_kUpCode, versionCode);
+    await prefs.setString(_kUpChannel, channel);
+    await prefs.setInt(_kUpSize, size);
+    await prefs.setString(_kUpUrl, url);
+  }
+
+  Future<Map<String, dynamic>?> _loadPendingUpdate() async {
+    final prefs = await SharedPreferences.getInstance();
+    final path = prefs.getString(_kUpPath);
+    if (path == null || path.isEmpty) return null;
+    final f = File(path);
+    if (!await f.exists()) {
+      await _clearPendingUpdatePrefs();
+      return null;
+    }
+    final len = await f.length();
+    final expected = prefs.getInt(_kUpSize) ?? 0;
+    if (len < 1000 || (expected > 0 && len < expected * 0.95)) {
+      try {
+        await f.delete();
+      } catch (_) {}
+      await _clearPendingUpdatePrefs();
+      return null;
+    }
+    final code = prefs.getInt(_kUpCode) ?? 0;
+    if (code > 0 && kVersionCode >= code) {
+      try {
+        await f.delete();
+      } catch (_) {}
+      await _clearPendingUpdatePrefs();
+      return null;
+    }
+    return {
+      'path': path,
+      'version': prefs.getString(_kUpVer) ?? '',
+      'version_code': code,
+      'channel': prefs.getString(_kUpChannel) ?? kApkChannel,
+      'size': len,
+      'url': prefs.getString(_kUpUrl) ?? '',
+    };
+  }
+
+  String _fmtMb(int bytes) {
+    if (bytes <= 0) return '0';
+    return (bytes / (1024 * 1024)).toStringAsFixed(1);
+  }
+
+  Future<void> _installApkFile(String path) async {
+    try {
+      final r = await OpenFilex.open(
+        path,
+        type: 'application/vnd.android.package-archive',
+      );
+      debugPrint('open apk: ${r.type} ${r.message}');
+      if (mounted) {
+        setState(() => _statusLine = 'نصب را در پنجره سیستم تأیید کنید');
+      }
+    } catch (e) {
+      debugPrint('install open: $e');
+      if (mounted) {
+        setState(() => _statusLine = 'باز کردن فایل نصب ممکن نشد');
+      }
+    }
+  }
+
   Future<void> _checkUpdate({bool silent = true}) async {
     try {
+      // اگر فایل از قبل دانلود شده، همان را پیشنهاد بده
+      final pending = await _loadPendingUpdate();
+      if (pending != null && !silent) {
+        final pVer = '${pending['version']}';
+        final pCode = pending['version_code'] as int;
+        final pSize = pending['size'] as int;
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: kCard,
+            title: const Text('فایل بروزرسانی آماده است',
+                style: TextStyle(color: kCyan)),
+            content: Text(
+              'نسخه $pVer (کد $pCode) قبلاً دانلود شده.\n'
+              'حجم: ${_fmtMb(pSize)} مگابایت\n\n'
+              'می‌توانید همین الان نصب کنید؛ نیازی به دانلود مجدد نیست.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('بعداً'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  await _deletePendingUpdateFile();
+                  if (mounted) {
+                    setState(() => _statusLine = 'فایل بروزرسانی حذف شد');
+                  }
+                },
+                child: const Text('حذف فایل',
+                    style: TextStyle(color: Colors.redAccent)),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  await _installApkFile(pending['path'] as String);
+                },
+                child: const Text('نصب', style: TextStyle(color: kCyan)),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
       final res = await http
           .get(Uri.parse(kUpdateMetaUrl))
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode != 200) return;
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) {
+        if (!silent && mounted) {
+          setState(() => _statusLine = 'سرور بروزرسانی پاسخ نداد');
+        }
+        return;
+      }
       final data = json.decode(res.body);
       if (data is! Map) return;
       final enabled = data['enabled'] == true;
       if (!enabled && silent) return;
-      final remoteCode = int.tryParse('${data['version_code'] ?? data['versionCode'] ?? 0}') ?? 0;
+
+      final remoteCode =
+          int.tryParse('${data['version_code'] ?? data['versionCode'] ?? 0}') ??
+              0;
       final remoteVer = '${data['version'] ?? ''}';
       final title = '${data['title'] ?? 'نسخه جدید JET VPN TV'}';
       final changelog = '${data['changelog'] ?? ''}';
       final urls = data['urls'];
       String apk = '';
       if (urls is Map) {
-        // روی بیشتر تی‌وی‌های ۳۲بیت، arm32 اولویت دارد
-        apk = '${urls['arm32'] ?? urls['armeabi-v7a'] ?? urls['arm64'] ?? urls['universal'] ?? ''}';
+        apk =
+            '${urls['arm32'] ?? urls['armeabi-v7a'] ?? urls['arm64'] ?? urls['universal'] ?? ''}';
       }
       if (apk.isEmpty) {
         apk = '${data['apk_arm32'] ?? data['apk_arm64'] ?? data['apk'] ?? ''}';
       }
+
+      // pending با همان version_code
+      if (pending != null && (pending['version_code'] as int) == remoteCode) {
+        if (!silent && mounted) {
+          setState(() => _statusLine = 'فایل نسخه $remoteVer آماده نصب است');
+        }
+        return;
+      }
+
       if (remoteCode <= kVersionCode) {
         if (!silent && mounted) {
           setState(() => _statusLine = 'برنامه به‌روز است ($kAppVersion)');
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: kCard,
+              title: const Text('همه‌چیز به‌روز است ✅',
+                  style: TextStyle(color: kTeal)),
+              content: Text(
+                'نسخه $kAppVersion روی دستگاه شما آخرین نسخه است.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('باشه', style: TextStyle(color: kCyan)),
+                ),
+              ],
+            ),
+          );
         }
         return;
       }
       if (!enabled && !silent) {
-        if (mounted) setState(() => _statusLine = 'بروزرسانی از پنل خاموش است');
+        if (mounted) {
+          setState(() => _statusLine = 'بروزرسانی از پنل خاموش است');
+        }
         return;
       }
       if (!mounted) return;
       final force = data['force'] == true;
+
       await showDialog<void>(
         context: context,
         barrierDismissible: !force,
@@ -645,7 +833,8 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           title: Text(title, style: const TextStyle(color: kCyan)),
           content: Text(
             'نسخه جدید: $remoteVer\nنسخه فعلی: $kAppVersion'
-            '${changelog.isNotEmpty ? '\n\n$changelog' : ''}',
+            '${changelog.isNotEmpty ? '\n\n$changelog' : ''}\n\n'
+            'فایل بعد از دانلود نگه داشته می‌شود تا بتوانید بعداً نصب کنید.',
           ),
           actions: [
             if (!force)
@@ -658,9 +847,14 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                   ? null
                   : () async {
                       Navigator.pop(ctx);
-                      await _downloadAndInstall(apk);
+                      await _startApkDownload(
+                        apkUrl: apk,
+                        remoteVer: remoteVer,
+                        remoteCode: remoteCode,
+                      );
                     },
-              child: const Text('دانلود و نصب', style: TextStyle(color: kCyan)),
+              child: const Text('دانلود و نصب',
+                  style: TextStyle(color: kCyan)),
             ),
           ],
         ),
@@ -673,30 +867,250 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
   }
 
-  Future<void> _downloadAndInstall(String url) async {
-    if (!mounted) return;
-    setState(() => _statusLine = 'در حال دانلود بروزرسانی…');
-    try {
-      final res = await http.get(Uri.parse(url)).timeout(const Duration(minutes: 5));
-      if (res.statusCode != 200 || res.bodyBytes.isEmpty) {
-        setState(() => _statusLine = 'دانلود ناموفق بود');
-        return;
-      }
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/jet_vpn_tv_update.apk');
-      await file.writeAsBytes(res.bodyBytes, flush: true);
-      if (!mounted) return;
-      setState(() => _statusLine = 'دانلود شد — در حال باز کردن نصب…');
-      final r = await OpenFilex.open(file.path);
-      debugPrint('open apk: ${r.message}');
-    } catch (e) {
-      debugPrint('download: $e');
-      if (mounted) {
-        setState(() => _statusLine = 'خطا در دانلود یا نصب بروزرسانی');
-      }
+  Future<void> _deletePendingUpdateFile() async {
+    final info = await _loadPendingUpdate();
+    if (info != null) {
+      try {
+        final f = File(info['path'] as String);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
     }
+    await _clearPendingUpdatePrefs();
   }
 
+  Future<void> _startApkDownload({
+    required String apkUrl,
+    required String remoteVer,
+    required int remoteCode,
+  }) async {
+    if (!mounted) return;
+
+    final progress = ValueNotifier<double>(0);
+    final status = ValueNotifier<String>('در حال آماده‌سازی…');
+    var cancelled = false;
+    http.Client? client;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: kCard,
+          title: const Text(
+            'دانلود بروزرسانی',
+            style: TextStyle(color: kCyan, fontWeight: FontWeight.bold),
+          ),
+          content: ValueListenableBuilder<String>(
+            valueListenable: status,
+            builder: (_, st, __) {
+              return ValueListenableBuilder<double>(
+                valueListenable: progress,
+                builder: (_, p, __) {
+                  final pct = (p * 100).clamp(0, 100).toStringAsFixed(0);
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(st,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 14)),
+                      const SizedBox(height: 16),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: LinearProgressIndicator(
+                          value: p > 0 && p < 1 ? p : (p >= 1 ? 1.0 : null),
+                          minHeight: 10,
+                          backgroundColor: Colors.white12,
+                          color: kCyan,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        p > 0 ? '$pct٪' : '…',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: kCyan,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'فایل در حافظه اپ ذخیره می‌شود.\n'
+                        'اگر الان نصب نکردید، از «آپدیت اپ» دوباره نصب کنید.',
+                        style: TextStyle(
+                            color: Colors.white38, fontSize: 12, height: 1.4),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancelled = true;
+                try {
+                  client?.close();
+                } catch (_) {}
+                Navigator.pop(ctx);
+              },
+              child: const Text('انصراف',
+                  style: TextStyle(color: Colors.redAccent)),
+            ),
+          ],
+        );
+      },
+    );
+
+    File? file;
+    try {
+      status.value = 'در حال دانلود از سرور…';
+      final dir = await _updateStorageDir();
+      final safeVer = remoteVer.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
+      file = File('${dir.path}/jetvpn_tv_${safeVer}_$kApkChannel.apk');
+
+      try {
+        await for (final entity in dir.list()) {
+          if (entity is File &&
+              entity.path.endsWith('.apk') &&
+              entity.path != file.path) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+
+      if (await file.exists()) {
+        try {
+          await file.delete();
+        } catch (_) {}
+      }
+
+      client = http.Client();
+      final req = http.Request('GET', Uri.parse(apkUrl));
+      req.headers['User-Agent'] = 'JET-VPN-TV-Updater/$kAppVersion';
+      final streamed =
+          await client.send(req).timeout(const Duration(minutes: 15));
+      if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+        throw Exception('HTTP ${streamed.statusCode}');
+      }
+
+      final total = streamed.contentLength ?? 0;
+      final sink = file.openWrite();
+      var received = 0;
+      await for (final chunk in streamed.stream) {
+        if (cancelled) break;
+        sink.add(chunk);
+        received += chunk.length;
+        if (total > 0) {
+          progress.value = (received / total).clamp(0.0, 1.0);
+          status.value =
+              'دانلود… ${(progress.value * 100).toStringAsFixed(0)}٪  ·  ${_fmtMb(received)} / ${_fmtMb(total)} مگ';
+        } else {
+          status.value = 'دانلود… ${_fmtMb(received)} مگابایت';
+        }
+      }
+      await sink.flush();
+      await sink.close();
+
+      if (cancelled) {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+        if (mounted) {
+          setState(() => _statusLine = 'دانلود لغو شد');
+        }
+        return;
+      }
+
+      final size = await file.length();
+      if (size < 1000) throw Exception('فایل خیلی کوچک است');
+
+      await _savePendingUpdate(
+        path: file.path,
+        version: remoteVer,
+        versionCode: remoteCode,
+        channel: kApkChannel,
+        size: size,
+        url: apkUrl,
+      );
+
+      progress.value = 1;
+      status.value = 'دانلود کامل شد · ${_fmtMb(size)} مگابایت';
+
+      if (mounted) {
+        // بستن دیالوگ پیشرفت
+        Navigator.of(context, rootNavigator: true).pop();
+        setState(() =>
+            _statusLine = 'دانلود شد — می‌توانید نصب کنید یا بعداً از آپدیت اپ');
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: kCard,
+            title: const Text('دانلود تمام شد',
+                style: TextStyle(color: kTeal)),
+            content: Text(
+              'نسخه $remoteVer ذخیره شد (${_fmtMb(size)} مگ).\n\n'
+              'اگر الان نصب نکنید، فایل می‌ماند و از «آپدیت اپ» دوباره نصب می‌شود.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('بعداً'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  await _installApkFile(file!.path);
+                },
+                child: const Text('نصب الان',
+                    style: TextStyle(color: kCyan)),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('tv apk download: $e');
+      try {
+        if (file != null && await file.exists()) {
+          // اگر ناقص بود پاک کن مگر نزدیک کامل
+          final len = await file.length();
+          if (len < 10000) await file.delete();
+        }
+      } catch (_) {}
+      if (mounted) {
+        try {
+          Navigator.of(context, rootNavigator: true).pop();
+        } catch (_) {}
+        setState(() => _statusLine = 'خطا در دانلود بروزرسانی');
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: kCard,
+            title: const Text('خطای دانلود',
+                style: TextStyle(color: Colors.redAccent)),
+            content: Text('$e'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('باشه'),
+              ),
+            ],
+          ),
+        );
+      }
+    } finally {
+      try {
+        client?.close();
+      } catch (_) {}
+      progress.dispose();
+      status.dispose();
+    }
+  }
 
   Future<bool> _login(String username, String password, {bool silent = false}) async {
     if (!silent) {
