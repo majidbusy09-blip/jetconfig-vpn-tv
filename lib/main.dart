@@ -13,12 +13,12 @@ import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.11';
+const String kAppVersion = 'tv-1.0.12';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 111;
+const int kVersionCode = 112;
 const String kApkChannel = 'arm32';
 
 // رنگ‌های برند جت
@@ -696,6 +696,21 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   String _fmtMb(int bytes) {
     if (bytes <= 0) return '0';
     return (bytes / (1024 * 1024)).toStringAsFixed(1);
+  }
+
+  String _friendlyDlError(Object e) {
+    final s = '$e';
+    if (s.contains('Connection closed') || s.contains('ClientException')) {
+      return 'ارتباط حین دانلود قطع شد.\nلطفاً دوباره امتحان کنید.';
+    }
+    if (s.contains('Timeout') || s.contains('timeout')) {
+      return 'زمان دانلود تمام شد.\nاینترنت تی‌وی را چک کنید و دوباره بزنید.';
+    }
+    if (s.contains('SocketException') || s.contains('Failed host')) {
+      return 'به سرور دانلود وصل نشد.\nVPN یا اینترنت تی‌وی را بررسی کنید.';
+    }
+    final short = s.length > 120 ? '${s.substring(0, 120)}…' : s;
+    return 'دانلود ناموفق بود.\n$short';
   }
 
   Future<void> _installApkFile(String path) async {
