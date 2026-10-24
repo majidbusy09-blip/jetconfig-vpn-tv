@@ -13,12 +13,12 @@ import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.12';
+const String kAppVersion = 'tv-1.0.13';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 112;
+const int kVersionCode = 113;
 const String kApkChannel = 'arm32';
 
 // رنگ‌های برند جت
@@ -1327,6 +1327,120 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
   }
 
+  /// پایداری استریم (مثل موبایل): بلاک QUIC/UDP:443 + DNS فقط IPv4
+  /// بدون این، یوتیوب روی تی‌وی اغلب فقط تصویر می‌آورد و پخش نمی‌شود.
+  void _injectStreamStabilityRules(Map<String, dynamic> cfg) {
+    String directTag = 'direct';
+    String blockTag = 'block';
+    final outs = cfg['outbounds'];
+    if (outs is List) {
+      var foundDirect = false;
+      var foundBlock = false;
+      for (final o in outs) {
+        if (o is! Map) continue;
+        final tag = '${o['tag'] ?? ''}'.toLowerCase();
+        final proto = '${o['protocol'] ?? ''}'.toLowerCase();
+        if (tag == 'direct' || tag == 'freedom' || tag == 'direct-out') {
+          directTag = '${o['tag']}';
+          foundDirect = true;
+        } else if (!foundDirect && proto == 'freedom') {
+          directTag = '${o['tag'] ?? 'direct'}';
+          foundDirect = true;
+        }
+        if (tag == 'block' || tag == 'blocked' || tag == 'blackhole') {
+          blockTag = '${o['tag']}';
+          foundBlock = true;
+        } else if (!foundBlock && proto == 'blackhole') {
+          blockTag = '${o['tag'] ?? 'block'}';
+          foundBlock = true;
+        }
+      }
+      if (!foundDirect) {
+        outs.add({'protocol': 'freedom', 'tag': 'direct'});
+        directTag = 'direct';
+      }
+      if (!foundBlock) {
+        outs.add({'protocol': 'blackhole', 'tag': 'block'});
+        blockTag = 'block';
+      }
+    } else {
+      cfg['outbounds'] = [
+        {'protocol': 'freedom', 'tag': 'direct'},
+        {'protocol': 'blackhole', 'tag': 'block'},
+      ];
+      directTag = 'direct';
+      blockTag = 'block';
+    }
+
+    if (cfg['dns'] is! Map) {
+      cfg['dns'] = {
+        'servers': ['1.1.1.1', '8.8.8.8'],
+        'queryStrategy': 'UseIPv4',
+      };
+    } else {
+      final dns = Map<String, dynamic>.from(cfg['dns'] as Map);
+      if (dns['servers'] is! List || (dns['servers'] as List).isEmpty) {
+        dns['servers'] = ['1.1.1.1', '8.8.8.8'];
+      }
+      dns['queryStrategy'] = 'UseIPv4';
+      cfg['dns'] = dns;
+    }
+
+    final privateRule = {
+      'type': 'field',
+      'ip': [
+        'geoip:private',
+        '10.0.0.0/8',
+        '127.0.0.0/8',
+        '172.16.0.0/12',
+        '192.168.0.0/16',
+        '169.254.0.0/16',
+      ],
+      'outboundTag': directTag,
+    };
+
+    // یوتیوب/استریم: QUIC روی UDP/443 را بلاک کن تا روی TCP برود
+    final quicBlockRule = {
+      'type': 'field',
+      'network': 'udp',
+      'port': '443',
+      'outboundTag': blockTag,
+    };
+
+    Map<String, dynamic> routing = cfg['routing'] is Map
+        ? Map<String, dynamic>.from(cfg['routing'] as Map)
+        : {'domainStrategy': 'IPIfNonMatch', 'rules': <dynamic>[]};
+    final rules = <dynamic>[];
+    if (routing['rules'] is List) {
+      rules.addAll(List<dynamic>.from(routing['rules'] as List));
+    }
+
+    final hasPrivate = rules.any((r) =>
+        r is Map &&
+        r['ip'] is List &&
+        (r['ip'] as List).any(
+            (d) => '$d'.contains('private') || '$d'.contains('192.168')));
+    if (!hasPrivate) {
+      rules.insert(0, privateRule);
+    }
+
+    final hasQuicBlock = rules.any((r) =>
+        r is Map &&
+        '${r['network'] ?? ''}'.toLowerCase() == 'udp' &&
+        '${r['port'] ?? ''}'.contains('443') &&
+        ('${r['outboundTag'] ?? ''}'.toLowerCase().contains('block') ||
+            '${r['outboundTag'] ?? ''}'.toLowerCase().contains('blackhole')));
+    if (!hasQuicBlock) {
+      var insertAt = hasPrivate ? 1 : 0;
+      if (insertAt > rules.length) insertAt = rules.length;
+      rules.insert(insertAt, quicBlockRule);
+    }
+
+    routing['rules'] = rules;
+    routing['domainStrategy'] = routing['domainStrategy'] ?? 'IPIfNonMatch';
+    cfg['routing'] = routing;
+  }
+
   String _prepareConfig(String raw) {
     final s = raw.trim();
     if (s.isEmpty) return s;
@@ -1334,8 +1448,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       try {
         final decoded = jsonDecode(s);
         if (decoded is Map) {
-          return _ensureLocalHttpInbound(
-              jsonEncode(Map<String, dynamic>.from(decoded)));
+          final map = Map<String, dynamic>.from(decoded);
+          _injectStreamStabilityRules(map);
+          return _ensureLocalHttpInbound(jsonEncode(map));
         }
       } catch (_) {}
       return s;
@@ -1347,6 +1462,14 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       try {
         final parsed = V2ray.parseFromURL(s);
         final full = parsed.getFullConfiguration();
+        try {
+          final decoded = jsonDecode(full);
+          if (decoded is Map) {
+            final map = Map<String, dynamic>.from(decoded);
+            _injectStreamStabilityRules(map);
+            return _ensureLocalHttpInbound(jsonEncode(map));
+          }
+        } catch (_) {}
         return _ensureLocalHttpInbound(full);
       } catch (_) {
         return s;
