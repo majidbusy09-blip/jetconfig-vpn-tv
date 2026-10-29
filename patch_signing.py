@@ -3,7 +3,7 @@
 from pathlib import Path
 
 GROOVY_TAIL = r'''
-// --- JET VPN TV release signing (appended) ---
+// --- JET TV release signing (appended) ---
 def _jetKp = new Properties()
 def _jetKpFile = rootProject.file("key.properties")
 if (_jetKpFile.exists()) {
@@ -21,7 +21,7 @@ if (_jetKpFile.exists()) {
 '''
 
 KTS_TAIL = r'''
-// --- JET VPN TV release signing (appended) ---
+// --- JET TV release signing (appended) ---
 import java.util.Properties
 import java.io.FileInputStream
 val _jetKp = Properties()
@@ -41,7 +41,7 @@ if (_jetKpFile.exists()) {
 }
 '''
 
-MARKER = "// --- JET VPN TV release signing"
+MARKER = "// --- JET TV release signing"
 
 def main() -> None:
     for name, tail in (

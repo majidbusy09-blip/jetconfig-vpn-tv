@@ -9,7 +9,7 @@ def patch_manifest():
         raise SystemExit("AndroidManifest.xml not found")
     t = p.read_text(encoding="utf-8")
 
-    t = re.sub(r'android:label="[^"]*"', 'android:label="JET VPN TV"', t)
+    t = re.sub(r'android:label="[^"]*"', 'android:label="JET TV"', t)
 
     if "REQUEST_INSTALL_PACKAGES" not in t and "<application" in t:
         t = t.replace(
