@@ -1,4 +1,4 @@
-// JET VPN TV — پروژه جدا از موبایل | تونل کامل | اتصال هوشمند
+// JET TV — پروژه جدا از موبایل | تونل کامل | اتصال هوشمند
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:convert';
@@ -13,12 +13,12 @@ import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 
-const String kAppVersion = 'tv-1.0.13';
+const String kAppVersion = 'tv-1.0.14';
 const String kApiBase = 'https://majid6064.ir/api.php';
 const String kLogoUrl = 'https://majid6064.ir/logo.png';
 const String kPingUrl = 'https://www.gstatic.com/generate_204';
 const String kUpdateMetaUrl = 'https://majid6064.ir/app_version_tv.json';
-const int kVersionCode = 113;
+const int kVersionCode = 114;
 const String kApkChannel = 'arm32';
 
 // رنگ‌های برند جت
@@ -31,17 +31,17 @@ const Color kTealDeep = Color(0xFF008B74);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const JetVpnTvApp());
+  runApp(const JetTvApp());
 }
 
-class JetVpnTvApp extends StatelessWidget {
-  const JetVpnTvApp({super.key});
+class JetTvApp extends StatelessWidget {
+  const JetTvApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'JET VPN TV',
+      title: 'JET TV',
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: kBg,
@@ -798,7 +798,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
           int.tryParse('${data['version_code'] ?? data['versionCode'] ?? 0}') ??
               0;
       final remoteVer = '${data['version'] ?? ''}';
-      final title = '${data['title'] ?? 'نسخه جدید JET VPN TV'}';
+      final title = '${data['title'] ?? 'نسخه جدید JET TV'}';
       final changelog = '${data['changelog'] ?? ''}';
       final urls = data['urls'];
       String apk = '';
@@ -994,7 +994,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       status.value = 'در حال دانلود از سرور…';
       final dir = await _updateStorageDir();
       final safeVer = remoteVer.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
-      file = File('${dir.path}/jetvpn_tv_${safeVer}_$kApkChannel.apk');
+      file = File('${dir.path}/jet_tv_${safeVer}_$kApkChannel.apk');
 
       try {
         await for (final entity in dir.list()) {
@@ -1016,7 +1016,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
       client = http.Client();
       final req = http.Request('GET', Uri.parse(apkUrl));
-      req.headers['User-Agent'] = 'JET-VPN-TV-Updater/$kAppVersion';
+      req.headers['User-Agent'] = 'JET-TV-Updater/$kAppVersion';
       final streamed =
           await client.send(req).timeout(const Duration(minutes: 15));
       if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
@@ -2027,7 +2027,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                         CircularProgressIndicator(color: kCyan),
                         SizedBox(height: 16),
                         Text(
-                          'JET VPN',
+                          'JET TV',
                           style: TextStyle(
                               color: kCyan, fontSize: 22, letterSpacing: 2),
                         ),
@@ -2083,7 +2083,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
               _logo(96),
               const SizedBox(height: 16),
               const Text(
-                'JET VPN TV',
+                'JET TV',
                 style: TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.bold,
@@ -2272,7 +2272,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'JET VPN',
+                      'JET TV',
                       style: TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.bold,
