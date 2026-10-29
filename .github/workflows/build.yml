@@ -1,4 +1,4 @@
-name: Build JET VPN TV
+name: Build JET TV
 
 on:
   push:
@@ -126,41 +126,41 @@ jobs:
           set -e
           mkdir -p release-files
           if [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ]; then
-            cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk release-files/JET-VPN-TV-arm64.apk
+            cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk release-files/JET-TV-arm64.apk
           fi
           if [ -f build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ]; then
-            cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk release-files/JET-VPN-TV-arm32.apk
+            cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk release-files/JET-TV-arm32.apk
           fi
           ls -lh release-files/
 
       - name: Upload arm64 APK
-        if: hashFiles('release-files/JET-VPN-TV-arm64.apk') != ''
+        if: hashFiles('release-files/JET-TV-arm64.apk') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: JET-VPN-TV-arm64
-          path: release-files/JET-VPN-TV-arm64.apk
+          name: JET-TV-arm64
+          path: release-files/JET-TV-arm64.apk
           if-no-files-found: warn
 
       - name: Upload arm32 APK
-        if: hashFiles('release-files/JET-VPN-TV-arm32.apk') != ''
+        if: hashFiles('release-files/JET-TV-arm32.apk') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: JET-VPN-TV-arm32
-          path: release-files/JET-VPN-TV-arm32.apk
+          name: JET-TV-arm32
+          path: release-files/JET-TV-arm32.apk
           if-no-files-found: warn
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: tv-1.0.12-${{ github.run_number }}
-          name: JET VPN TV ${{ github.run_number }}
+          tag_name: tv-1.0.14-${{ github.run_number }}
+          name: JET TV ${{ github.run_number }}
           files: |
-            release-files/JET-VPN-TV-arm64.apk
-            release-files/JET-VPN-TV-arm32.apk
+            release-files/JET-TV-arm64.apk
+            release-files/JET-TV-arm32.apk
           fail_on_unmatched_files: false
           body: |
             ### نصب
-            - JET-VPN-TV-arm32.apk (برای اکثر تی‌وی‌ها)
-            - JET-VPN-TV-arm64.apk
+            - JET-TV-arm32.apk (برای اکثر تی‌وی‌ها)
+            - JET-TV-arm64.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
