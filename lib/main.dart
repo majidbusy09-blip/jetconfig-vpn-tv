@@ -612,7 +612,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   Future<void> _clearPendingUpdatePrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_kUpRecord);
+    // Remove legacy fields first and the new record last. Until the final
+    // removal succeeds, a new-format record remains present and prevents a
+    // crash midway through cleanup from falling back to stale legacy fields.
     await prefs.remove(_kUpPath);
     await prefs.remove(_kUpVer);
     await prefs.remove(_kUpCode);
@@ -620,6 +622,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     await prefs.remove(_kUpSize);
     await prefs.remove(_kUpUrl);
     await prefs.remove(_kUpSha256);
+    await prefs.remove(_kUpRecord);
   }
 
   Future<void> _savePendingUpdate({
