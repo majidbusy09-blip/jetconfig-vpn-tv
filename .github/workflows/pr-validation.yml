@@ -1,0 +1,106 @@
+name: PR Validation — JET VPN TV
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.4"
+          channel: stable
+          cache: true
+
+      - name: Generate Android project and restore app source
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/jet-tv-source
+          cp pubspec.yaml lib/main.dart patch_tv.py patch_signing.py /tmp/jet-tv-source/
+          [ ! -f logotype.png ] || cp logotype.png /tmp/jet-tv-source/
+          [ ! -f start.mp4 ] || cp start.mp4 /tmp/jet-tv-source/
+          flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
+          cp /tmp/jet-tv-source/pubspec.yaml .
+          mkdir -p lib
+          cp /tmp/jet-tv-source/main.dart lib/main.dart
+          cp /tmp/jet-tv-source/patch_tv.py .
+          cp /tmp/jet-tv-source/patch_signing.py .
+          [ ! -f /tmp/jet-tv-source/logotype.png ] || cp /tmp/jet-tv-source/logotype.png .
+          [ ! -f /tmp/jet-tv-source/start.mp4 ] || cp /tmp/jet-tv-source/start.mp4 .
+
+      - name: Prepare optional splash assets
+        run: |
+          set -euo pipefail
+          if [ ! -s start.mp4 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+            ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=2 \
+              -f lavfi -i anullsrc=r=44100:cl=stereo \
+              -c:v libx264 -pix_fmt yuv420p -t 2 -c:a aac -shortest start.mp4
+          fi
+          if [ ! -f logotype.png ]; then
+            python3 -c "import struct,zlib; open('logotype.png','wb').write(bytes.fromhex('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082'))"
+          fi
+
+      - name: Apply Android TV project patch
+        run: python3 patch_tv.py
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze app source (errors block; existing lint warnings are reported)
+        shell: bash
+        run: |
+          set +e
+          flutter analyze --no-pub lib/main.dart > analyze.log 2>&1
+          code=$?
+          set -e
+          cat analyze.log
+          if grep -Eq '^[[:space:]]*error [•-]' analyze.log; then
+            echo "Flutter analyzer reported error-level diagnostics."
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "Analyzer returned non-zero without an error-level diagnostic; treating this as an infrastructure/tool failure."
+            exit "$code"
+          fi
+
+      - name: Run tests when present
+        run: |
+          if [ -d test ] && find test -name '*_test.dart' -print -quit | grep -q .; then
+            flutter test
+          else
+            echo "No tracked test suite is present in this repository snapshot; test step skipped."
+          fi
+
+      - name: Build non-release ARM64 APK
+        run: flutter build apk --debug --target-platform android-arm64
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jet-tv-pr-debug-arm64
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
+          if-no-files-found: error
+          retention-days: 7
