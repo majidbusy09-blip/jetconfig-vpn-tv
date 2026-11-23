@@ -98,7 +98,7 @@ jobs:
           fi
 
       - name: Build non-release ARM64 APK
-        run: flutter build apk --debug --target-platform android-arm64
+        run: flutter build apk --debug --target-platform android-arm64 --split-per-abi
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
