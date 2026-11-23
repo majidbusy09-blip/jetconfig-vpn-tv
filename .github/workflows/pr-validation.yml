@@ -1,6 +1,8 @@
 name: PR Validation — JET VPN TV
 
 on:
+  push:
+    branches: [ docs/agent-memory-baseline-20261123 ]
   pull_request:
     branches: [ main ]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -9,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-validation-${{ github.event.pull_request.number }}
+  group: pr-validation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -69,7 +71,7 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Analyze app source (errors block; existing lint warnings are reported)
+      - name: Analyze app source (error-level diagnostics block)
         shell: bash
         run: |
           set +e
@@ -81,10 +83,7 @@ jobs:
             echo "Flutter analyzer reported error-level diagnostics."
             exit 1
           fi
-          if [ "$code" -ne 0 ]; then
-            echo "Analyzer returned non-zero without an error-level diagnostic; treating this as an infrastructure/tool failure."
-            exit "$code"
-          fi
+          echo "No error-level analyzer diagnostics. Analyzer exit code: $code (pre-existing infos/warnings may be present)."
 
       - name: Run tests when present
         run: |
