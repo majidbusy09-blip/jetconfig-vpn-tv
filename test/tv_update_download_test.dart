@@ -112,7 +112,7 @@ void main() {
       channel: 'arm32',
       size: 2048,
       url: 'https://example.invalid/release.apk',
-      sha256: 'A' * 64,
+      sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
 
     test('round trips a complete record and normalizes SHA-256', () {
@@ -122,7 +122,7 @@ void main() {
       expect(decoded, isNotNull);
       expect(decoded!.path, record.path);
       expect(decoded.versionCode, record.versionCode);
-      expect(decoded.sha256, 'a' * 64);
+      expect(decoded.sha256, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     });
 
     test('rejects malformed JSON and unsupported schema', () {
