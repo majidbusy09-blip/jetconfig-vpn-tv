@@ -1,9 +1,10 @@
 # JET VPN TV — Prioritized Next Steps
 
 1. Keep the read-only PR validation workflow green for source analysis, tests, and a non-release ARM64 debug APK.
-2. Preserve the extracted pure logic for connection state, server ping ranking, profile persistence, update metadata, and pending-update decisions. Avoid unrelated refactors.
-3. Phase A and Phase B of update artifact integrity are implemented: optional SHA-256 metadata parsing, digest computation after download, persistence of the expected digest, and revalidation before a pending APK is offered or opened for installation. Legacy manifests without a digest remain accepted but unverified.
-4. Next: review the production update-manifest publishing contract and prepare a test-TV rollout plan. Do not edit or publish the production manifest without explicit approval. Only after server-side hashes are published and verified should mandatory digest policy be considered.
-5. Maintain a manual TV checklist for real traffic, remote focus/navigation, sleep/resume, profile switching, and APK update/install.
+2. Review the client SHA-256 implementation and expand deterministic regression tests only where a concrete coverage gap exists.
+3. Preserve the backend handoff record in `docs/TV_UPDATE_BACKEND_SHA256_PATCH.md`; the separate patch bundle is prepared and locally validated, but is not deployed.
+4. Since staging access was waived by the owner, continue with offline verification and documentation. Do not represent the waived stage as a live server or device test.
+5. When staging access becomes available, apply the backend patch only to a staging copy, then run the server-to-client and physical-TV verification matrix in `docs/TV_UPDATE_HASH_ROLLOUT_CHECKLIST.md`.
+6. Maintain a manual TV checklist for real traffic, remote focus/navigation, sleep/resume, profile switching, and APK update/install.
 
 Deferred: tunnel/server/authentication changes without a concrete issue; signing, package identity, version, release, tag, production manifest, or deployment changes without explicit approval.

@@ -10,7 +10,20 @@
 - A pending APK is hashed again when loaded and immediately before the install flow is opened.
 - A missing or null digest remains backward-compatible but means the APK is not digest-verified. A malformed present digest rejects the manifest.
 
-**Important limitation:** the update endpoint and its publishing backend are external to this repository. The backend source and current production JSON could not be inspected from this repository snapshot. The schema below is therefore the client-observed contract, not proof of server-side validation or publishing behavior.
+## Backend source discovery and patch status
+
+The publishing backend was located in the user-provided archive `JetConfig_LATEST_20261118(1).zip`, at `webadmin/app_update_tv.php`. The panel creates/updates the public `app_version_tv.json`; the manifest is not a separately maintained static file in that archive.
+
+A server-side patch bundle was prepared outside this repository. It:
+- adds an optional top-level `sha256` field to the TV update metadata;
+- validates a nonblank digest as exactly 64 hexadecimal characters and normalizes it to lowercase;
+- preserves legacy behavior when the field is blank/null;
+- adds an optional SHA-256 input to the TV update admin form;
+- places the helper at `webadmin/includes/tv_update_integrity.php`.
+
+The patch was validated locally: 11 digest-helper checks, 5 manifest-contract checks, 4 panel integration checks, and PHP syntax checks passed. This is local/simulated validation only.
+
+**Staging status:** no staging host or panel access was available. The project owner elected to close the staging-access task for planning purposes. No live backend deployment, production manifest change, real HTTP round-trip, or physical-TV verification is claimed. Treat the backend patch as prepared and locally validated, not deployed.
 
 ## Example test manifest (synthetic only)
 
@@ -60,7 +73,8 @@ Record the TV model, Android version, app version before/after, manifest URL, AP
 
 ## Rollout gates
 
-- [ ] Backend owner confirms where `app_version_tv.json` is generated and how it is published.
+- [x] Backend source located in the user-provided archive; patch prepared and locally validated.
+- [x] Staging-access task closed by project owner because no staging access is available. This does not mean live staging verification passed.
 - [ ] Test endpoint and test APK are available without changing production.
 - [ ] Downloaded test APK digest matches the digest computed from the final release artifact.
 - [ ] Valid and negative cases pass on a physical Android TV.
