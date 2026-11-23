@@ -4,6 +4,13 @@ import 'dart:math' as math;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'tv_connection_logic.dart';
+import 'tv_profile_logic.dart';
+import 'tv_update_metadata.dart';
+import 'tv_pending_update_logic.dart';
+import 'tv_update_integrity.dart';
+import 'tv_update_download.dart';
+import 'tv_pending_update_record.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -108,6 +115,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   bool _loggedIn = false;
   bool _obscure = true;
   bool _busyLogin = false;
+  bool _isDownloadingUpdate = false;
   String? _loginError;
 
   String? _user;
@@ -211,6 +219,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     } catch (e) {
       debugPrint('v2ray init: $e');
     }
+    await _cleanupStaleUpdateFiles();
     final prefs = await SharedPreferences.getInstance();
     final u = prefs.getString('tv_user');
     final p = prefs.getString('tv_pass');
@@ -252,30 +261,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
-  bool _statusMeansConnected(String? state) {
-    final s = (state ?? '').toUpperCase().trim();
-    if (s.isEmpty) return false;
-    if (s.contains('DISCONNECT')) return false;
-    if (s == 'CONNECTED') return true;
-    // بعضی بیلدها فقط CONNECT می‌فرستند
-    if (s == 'CONNECT') return true;
-    return false;
-  }
+  bool _statusMeansConnected(String? state) =>
+      statusMeansConnected(state);
 
-  bool _statusMeansDisconnected(String? state) {
-    final s = (state ?? '').toUpperCase().trim();
-    return s.contains('DISCONNECT') ||
-        s == 'IDLE' ||
-        s == 'STOPPED' ||
-        s == 'NONE' ||
-        s == 'DISCONNECTED';
-  }
+  bool _statusMeansDisconnected(String? state) =>
+      statusMeansDisconnected(state);
 
   void _onStatus(V2RayStatus status) {
     if (!mounted) return;
     final prev = (_coreState ?? '').toUpperCase();
     _coreState = status.state;
-    final st = (status.state ?? '').toUpperCase();
+    final st = status.state.toUpperCase();
 
     // هنگام تعویض عمدی سرور، DISCONNECT را نادیده بگیر تا حلقه بازیابی ساخته نشود
     if (_switchingServers) return;
@@ -365,40 +361,13 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   Future<void> _upsertProfile(SharedPreferences prefs, String u, String p) async {
     final raw = prefs.getString('tv_profiles') ?? '[]';
-    List list;
-    try {
-      list = json.decode(raw) as List;
-    } catch (_) {
-      list = [];
-    }
-    final filtered = list
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .where((e) => '${e['u']}' != u)
-        .toList();
-    filtered.insert(0, {'u': u, 'p': p});
-    if (filtered.length > 12) {
-      filtered.removeRange(12, filtered.length);
-    }
-    await prefs.setString('tv_profiles', json.encode(filtered));
+    await prefs.setString('tv_profiles', upsertProfileJson(raw, u, p));
   }
 
   Future<List<Map<String, String>>> _loadProfiles() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('tv_profiles') ?? '[]';
-    try {
-      final list = json.decode(raw) as List;
-      return list
-          .whereType<Map>()
-          .map((e) => {
-                'u': '${e['u'] ?? ''}',
-                'p': '${e['p'] ?? ''}',
-              })
-          .where((e) => e['u']!.isNotEmpty)
-          .toList();
-    } catch (_) {
-      return [];
-    }
+    return loadProfilesFromJson(raw);
   }
 
   Future<void> _switchProfile(String u, String p) async {
@@ -620,6 +589,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   static const String _kUpChannel = 'tv_update_apk_channel';
   static const String _kUpSize = 'tv_update_apk_size';
   static const String _kUpUrl = 'tv_update_apk_url';
+  static const String _kUpSha256 = 'tv_update_apk_sha256';
+  static const String _kUpRecord = 'tv_update_pending_record_v1';
+
+  Future<void> _cleanupStaleUpdateFiles() async {
+    try {
+      final dir = await _updateStorageDir();
+      await cleanupStaleStagedApks(dir);
+    } catch (e) {
+      debugPrint('update temp cleanup: $e');
+    }
+  }
 
   Future<Directory> _updateStorageDir() async {
     final support = await getApplicationSupportDirectory();
@@ -632,12 +612,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   Future<void> _clearPendingUpdatePrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    // Remove legacy fields first and the new record last. Until the final
+    // removal succeeds, a new-format record remains present and prevents a
+    // crash midway through cleanup from falling back to stale legacy fields.
     await prefs.remove(_kUpPath);
     await prefs.remove(_kUpVer);
     await prefs.remove(_kUpCode);
     await prefs.remove(_kUpChannel);
     await prefs.remove(_kUpSize);
     await prefs.remove(_kUpUrl);
+    await prefs.remove(_kUpSha256);
+    await prefs.remove(_kUpRecord);
   }
 
   Future<void> _savePendingUpdate({
@@ -647,49 +632,104 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required String channel,
     required int size,
     required String url,
+    required String? sha256,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kUpPath, path);
-    await prefs.setString(_kUpVer, version);
-    await prefs.setInt(_kUpCode, versionCode);
-    await prefs.setString(_kUpChannel, channel);
-    await prefs.setInt(_kUpSize, size);
-    await prefs.setString(_kUpUrl, url);
+    final record = PendingUpdateRecord(
+      path: path,
+      version: version,
+      versionCode: versionCode,
+      channel: channel,
+      size: size,
+      url: url,
+      sha256: sha256,
+    );
+    // Persisting the new record is the commit point. Legacy-key cleanup is
+    // best-effort and must never invalidate a successfully committed APK.
+    await persistPendingUpdateRecord(
+      writeRecord: () => prefs.setString(
+        _kUpRecord,
+        encodePendingUpdateRecord(record),
+      ),
+      legacyKeys: const [
+        _kUpPath,
+        _kUpVer,
+        _kUpCode,
+        _kUpChannel,
+        _kUpSize,
+        _kUpUrl,
+        _kUpSha256,
+      ],
+      removeLegacyKey: prefs.remove,
+      onCleanupError: (key, error, stackTrace) {
+        debugPrint('pending update legacy-key cleanup failed ($key): $error');
+      },
+    );
   }
 
   Future<Map<String, dynamic>?> _loadPendingUpdate() async {
     final prefs = await SharedPreferences.getInstance();
-    final path = prefs.getString(_kUpPath);
+    final rawRecord = prefs.getString(_kUpRecord);
+    final record = rawRecord == null
+        ? null
+        : decodePendingUpdateRecord(rawRecord);
+    if (rawRecord != null && record == null) {
+      // A corrupt new-format record must never fall through to stale legacy
+      // fields and accidentally associate them with a different APK.
+      await _clearPendingUpdatePrefs();
+      return null;
+    }
+
+    // Read the previous multi-key format only when no new-format record exists.
+    final path = record?.path ?? prefs.getString(_kUpPath);
     if (path == null || path.isEmpty) return null;
     final f = File(path);
-    if (!await f.exists()) {
-      await _clearPendingUpdatePrefs();
+    final exists = await f.exists();
+    final len = exists ? await f.length() : 0;
+    final expectedSize = record?.size ?? prefs.getInt(_kUpSize) ?? 0;
+    final versionCode = record?.versionCode ?? prefs.getInt(_kUpCode) ?? 0;
+    final decision = evaluatePendingUpdate(
+      hasPath: true,
+      fileExists: exists,
+      actualSize: len,
+      expectedSize: expectedSize,
+      pendingVersionCode: versionCode,
+      currentVersionCode: kVersionCode,
+    );
+    if (!decision.isUsable) {
+      if (decision.action ==
+          PendingUpdateAction.deleteFileAndClearPreferences) {
+        try {
+          await f.delete();
+        } catch (_) {}
+      }
+      if (decision.action != PendingUpdateAction.none) {
+        await _clearPendingUpdatePrefs();
+      }
       return null;
     }
-    final len = await f.length();
-    final expected = prefs.getInt(_kUpSize) ?? 0;
-    if (len < 1000 || (expected > 0 && len < expected * 0.95)) {
-      try {
-        await f.delete();
-      } catch (_) {}
-      await _clearPendingUpdatePrefs();
-      return null;
-    }
-    final code = prefs.getInt(_kUpCode) ?? 0;
-    if (code > 0 && kVersionCode >= code) {
-      try {
-        await f.delete();
-      } catch (_) {}
-      await _clearPendingUpdatePrefs();
-      return null;
+    final expectedSha256 =
+        record?.sha256 ?? prefs.getString(_kUpSha256);
+    if (expectedSha256 != null) {
+      final actualSha256 = await calculateSha256(f.openRead());
+      if (!sha256Matches(expectedSha256, actualSha256)) {
+        try {
+          await f.delete();
+        } catch (_) {}
+        await _clearPendingUpdatePrefs();
+        return null;
+      }
     }
     return {
       'path': path,
-      'version': prefs.getString(_kUpVer) ?? '',
-      'version_code': code,
-      'channel': prefs.getString(_kUpChannel) ?? kApkChannel,
+      'version': record?.version ?? prefs.getString(_kUpVer) ?? '',
+      'version_code': versionCode,
+      'channel': record?.channel ??
+          prefs.getString(_kUpChannel) ??
+          kApkChannel,
       'size': len,
-      'url': prefs.getString(_kUpUrl) ?? '',
+      'url': record?.url ?? prefs.getString(_kUpUrl) ?? '',
+      'sha256': expectedSha256,
     };
   }
 
@@ -711,6 +751,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
     final short = s.length > 120 ? '${s.substring(0, 120)}…' : s;
     return 'دانلود ناموفق بود.\n$short';
+  }
+
+  Future<void> _installVerifiedPendingUpdate(String expectedPath) async {
+    final pending = await _loadPendingUpdate();
+    if (pending == null || pending['path'] != expectedPath) {
+      if (mounted) {
+        setState(() => _statusLine = 'فایل بروزرسانی معتبر نیست؛ دوباره دانلود کنید');
+      }
+      return;
+    }
+    await _installApkFile(expectedPath);
   }
 
   Future<void> _installApkFile(String path) async {
@@ -770,7 +821,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
               TextButton(
                 onPressed: () async {
                   Navigator.pop(ctx);
-                  await _installApkFile(pending['path'] as String);
+                  await _installVerifiedPendingUpdate(pending['path'] as String);
                 },
                 child: const Text('نصب', style: TextStyle(color: kCyan)),
               ),
@@ -789,26 +840,18 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         }
         return;
       }
-      final data = json.decode(res.body);
-      if (data is! Map) return;
-      final enabled = data['enabled'] == true;
+      final decoded = json.decode(res.body);
+      final metadata = parseTvUpdateMetadata(decoded);
+      if (metadata == null) return;
+
+      final enabled = metadata.enabled;
       if (!enabled && silent) return;
 
-      final remoteCode =
-          int.tryParse('${data['version_code'] ?? data['versionCode'] ?? 0}') ??
-              0;
-      final remoteVer = '${data['version'] ?? ''}';
-      final title = '${data['title'] ?? 'نسخه جدید JET TV'}';
-      final changelog = '${data['changelog'] ?? ''}';
-      final urls = data['urls'];
-      String apk = '';
-      if (urls is Map) {
-        apk =
-            '${urls['arm32'] ?? urls['armeabi-v7a'] ?? urls['arm64'] ?? urls['universal'] ?? ''}';
-      }
-      if (apk.isEmpty) {
-        apk = '${data['apk_arm32'] ?? data['apk_arm64'] ?? data['apk'] ?? ''}';
-      }
+      final remoteCode = metadata.versionCode;
+      final remoteVer = metadata.version;
+      final title = metadata.title;
+      final changelog = metadata.changelog;
+      final apk = metadata.apkUrl ?? '';
 
       // pending با همان version_code
       if (pending != null && (pending['version_code'] as int) == remoteCode) {
@@ -848,7 +891,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         return;
       }
       if (!mounted) return;
-      final force = data['force'] == true;
+      final force = metadata.force;
 
       await showDialog<void>(
         context: context,
@@ -876,6 +919,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                         apkUrl: apk,
                         remoteVer: remoteVer,
                         remoteCode: remoteCode,
+                        expectedSha256: metadata.sha256,
                       );
                     },
               child: const Text('دانلود و نصب',
@@ -907,8 +951,10 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required String apkUrl,
     required String remoteVer,
     required int remoteCode,
+    required String? expectedSha256,
   }) async {
-    if (!mounted) return;
+    if (!mounted || _isDownloadingUpdate) return;
+    _isDownloadingUpdate = true;
 
     final progress = ValueNotifier<double>(0);
     final status = ValueNotifier<String>('در حال آماده‌سازی…');
@@ -990,28 +1036,21 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     );
 
     File? file;
+    File? stagedFile;
+    IOSink? sink;
+    var promoted = false;
+    var pendingSaved = false;
     try {
       status.value = 'در حال دانلود از سرور…';
       final dir = await _updateStorageDir();
       final safeVer = remoteVer.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
       file = File('${dir.path}/jet_tv_${safeVer}_$kApkChannel.apk');
+      stagedFile = File('${file.path}.part');
 
-      try {
-        await for (final entity in dir.list()) {
-          if (entity is File &&
-              entity.path.endsWith('.apk') &&
-              entity.path != file.path) {
-            try {
-              await entity.delete();
-            } catch (_) {}
-          }
-        }
-      } catch (_) {}
-
-      if (await file.exists()) {
-        try {
-          await file.delete();
-        } catch (_) {}
+      // Download to a separate staging file. Never remove a previously
+      // verified pending APK until the replacement is fully validated.
+      if (await stagedFile.exists()) {
+        await stagedFile.delete();
       }
 
       client = http.Client();
@@ -1024,7 +1063,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
 
       final total = streamed.contentLength ?? 0;
-      final sink = file.openWrite();
+      sink = stagedFile.openWrite();
       var received = 0;
       await for (final chunk in streamed.stream) {
         if (cancelled) break;
@@ -1040,10 +1079,11 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
       await sink.flush();
       await sink.close();
+      sink = null;
 
       if (cancelled) {
         try {
-          if (await file.exists()) await file.delete();
+          if (await stagedFile.exists()) await stagedFile.delete();
         } catch (_) {}
         if (mounted) {
           setState(() => _statusLine = 'دانلود لغو شد');
@@ -1051,8 +1091,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         return;
       }
 
-      final size = await file.length();
+      final size = await stagedFile.length();
       if (size < 1000) throw Exception('فایل خیلی کوچک است');
+
+      file = await promoteVerifiedApk(
+        stagedFile: stagedFile,
+        destinationFile: file,
+        expectedSha256: expectedSha256,
+      );
+      promoted = true;
 
       await _savePendingUpdate(
         path: file.path,
@@ -1061,7 +1108,24 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         channel: kApkChannel,
         size: size,
         url: apkUrl,
+        sha256: expectedSha256,
       );
+      pendingSaved = true;
+
+      // Only after the new APK and its metadata are committed may older APKs
+      // be removed. This keeps the previous pending update through failures.
+      try {
+        await for (final entity in dir.list()) {
+          if (entity is File &&
+              entity.path != file.path &&
+              (entity.path.endsWith('.apk') ||
+                  entity.path.endsWith('.apk.part'))) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
 
       progress.value = 1;
       status.value = 'دانلود کامل شد · ${_fmtMb(size)} مگابایت';
@@ -1089,7 +1153,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
               TextButton(
                 onPressed: () async {
                   Navigator.pop(ctx);
-                  await _installApkFile(file!.path);
+                  await _installVerifiedPendingUpdate(file!.path);
                 },
                 child: const Text('نصب الان',
                     style: TextStyle(color: kCyan)),
@@ -1103,7 +1167,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       // انصراف کاربر → client.close باعث ClientException می‌شود؛ خطا نشان نده
       if (cancelled) {
         try {
-          if (file != null && await file.exists()) await file.delete();
+          await sink?.close();
+        } catch (_) {}
+        try {
+          if (stagedFile != null && await stagedFile.exists()) {
+            await stagedFile.delete();
+          }
+          if (promoted && !pendingSaved && file != null && await file.exists()) {
+            await file.delete();
+          }
         } catch (_) {}
         if (mounted) {
           try {
@@ -1113,9 +1185,14 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         }
       } else {
         try {
-          if (file != null && await file.exists()) {
-            final len = await file.length();
-            if (len < 10000) await file.delete();
+          await sink?.close();
+        } catch (_) {}
+        try {
+          if (stagedFile != null && await stagedFile.exists()) {
+            await stagedFile.delete();
+          }
+          if (promoted && !pendingSaved && file != null && await file.exists()) {
+            await file.delete();
           }
         } catch (_) {}
         if (mounted) {
@@ -1147,6 +1224,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       } catch (_) {}
       progress.dispose();
       status.dispose();
+      _isDownloadingUpdate = false;
     }
   }
 
@@ -1580,15 +1658,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
 
     // امتیاز: پینگ واقعی؛ زیر ۳۰ms مشکوک
-    _servers.sort((a, b) {
-      int score(TvServer s) {
-        if (s.ping <= 0) return 999999;
-        if (s.ping < 30) return 5000 + s.ping;
-        return s.ping;
-      }
-
-      return score(a).compareTo(score(b));
-    });
+    _servers.sort((a, b) => compareServerPing(a.ping, b.ping));
     if (mounted) setState(() {});
   }
 

@@ -1,0 +1,125 @@
+name: PR Validation — JET VPN TV
+
+on:
+  push:
+    branches: [ docs/agent-memory-baseline-20261123 ]
+  pull_request:
+    branches: [ main ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.4"
+          channel: stable
+          cache: true
+
+      - name: Generate Android project and restore app source
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/jet-tv-source
+          cp pubspec.yaml patch_tv.py patch_signing.py /tmp/jet-tv-source/
+          cp -a lib /tmp/jet-tv-source/lib
+          cp -a test /tmp/jet-tv-source/test
+          [ ! -f logotype.png ] || cp logotype.png /tmp/jet-tv-source/
+          [ ! -f start.mp4 ] || cp start.mp4 /tmp/jet-tv-source/
+          flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
+          cp /tmp/jet-tv-source/pubspec.yaml .
+          # Restore every tracked app module and test after project generation.
+          rm -rf lib test
+          cp -a /tmp/jet-tv-source/lib lib
+          cp -a /tmp/jet-tv-source/test test
+          cp /tmp/jet-tv-source/patch_tv.py .
+          cp /tmp/jet-tv-source/patch_signing.py .
+          [ ! -f /tmp/jet-tv-source/logotype.png ] || cp /tmp/jet-tv-source/logotype.png .
+          [ ! -f /tmp/jet-tv-source/start.mp4 ] || cp /tmp/jet-tv-source/start.mp4 .
+
+      - name: Prepare optional splash assets
+        run: |
+          set -euo pipefail
+          if [ ! -s start.mp4 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+            ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=2 \
+              -f lavfi -i anullsrc=r=44100:cl=stereo \
+              -c:v libx264 -pix_fmt yuv420p -t 2 -c:a aac -shortest start.mp4
+          fi
+          if [ ! -f logotype.png ]; then
+            python3 -c "import struct,zlib; open('logotype.png','wb').write(bytes.fromhex('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082'))"
+          fi
+
+      - name: Apply Android TV project patch
+        run: python3 patch_tv.py
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze app source (error-level diagnostics block)
+        shell: bash
+        run: |
+          set +e
+          flutter analyze --no-pub lib test > analyze.log 2>&1
+          code=$?
+          set -e
+          cat analyze.log
+          if grep -Eq '^[[:space:]]*error [•-]' analyze.log; then
+            echo "Flutter analyzer reported error-level diagnostics."
+            exit 1
+          fi
+          warnings=$(grep -cE '^[[:space:]]*warning [•-]' analyze.log || true)
+          infos=$(grep -cE '^[[:space:]]*info [•-]' analyze.log || true)
+          echo "No analyzer errors. Existing warnings: $warnings; infos: $infos; analyzer exit code: $code."
+
+      - name: Run required app regression tests
+        run: |
+          set -euo pipefail
+          required_tests=(
+            test/tv_connection_logic_test.dart
+            test/tv_pending_update_logic_test.dart
+            test/tv_profile_logic_test.dart
+            test/tv_update_download_test.dart
+            test/tv_update_integrity_test.dart
+            test/tv_update_metadata_test.dart
+            test/tv_pending_update_record_persistence_test.dart
+          )
+          for test_file in "${required_tests[@]}"; do
+            if [ ! -s "$test_file" ]; then
+              echo "Required regression test is missing or empty: $test_file"
+              exit 1
+            fi
+          done
+          test_count=$(find test -type f -name '*_test.dart' | wc -l)
+          echo "Running $test_count app-owned test files."
+          flutter test --reporter expanded
+
+      - name: Build non-release ARM64 APK
+        run: flutter build apk --debug --target-platform android-arm64 --split-per-abi
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jet-tv-pr-debug-arm64
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
+          if-no-files-found: error
+          retention-days: 7
