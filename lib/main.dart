@@ -9,6 +9,7 @@ import 'tv_profile_logic.dart';
 import 'tv_update_metadata.dart';
 import 'tv_pending_update_logic.dart';
 import 'tv_update_integrity.dart';
+import 'tv_update_download.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -617,7 +618,9 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required String? sha256,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kUpPath, path);
+    // The path is the commit marker: write it last so an interrupted metadata
+    // save cannot expose a partially populated pending-update record.
+    await prefs.remove(_kUpPath);
     await prefs.setString(_kUpVer, version);
     await prefs.setInt(_kUpCode, versionCode);
     await prefs.setString(_kUpChannel, channel);
@@ -628,6 +631,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     } else {
       await prefs.setString(_kUpSha256, sha256);
     }
+    await prefs.setString(_kUpPath, path);
   }
 
   Future<Map<String, dynamic>?> _loadPendingUpdate() async {
@@ -982,28 +986,21 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     );
 
     File? file;
+    File? stagedFile;
+    IOSink? sink;
+    var promoted = false;
+    var pendingSaved = false;
     try {
       status.value = 'در حال دانلود از سرور…';
       final dir = await _updateStorageDir();
       final safeVer = remoteVer.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
       file = File('${dir.path}/jet_tv_${safeVer}_$kApkChannel.apk');
+      stagedFile = File('${file.path}.part');
 
-      try {
-        await for (final entity in dir.list()) {
-          if (entity is File &&
-              entity.path.endsWith('.apk') &&
-              entity.path != file.path) {
-            try {
-              await entity.delete();
-            } catch (_) {}
-          }
-        }
-      } catch (_) {}
-
-      if (await file.exists()) {
-        try {
-          await file.delete();
-        } catch (_) {}
+      // Download to a separate staging file. Never remove a previously
+      // verified pending APK until the replacement is fully validated.
+      if (await stagedFile.exists()) {
+        await stagedFile.delete();
       }
 
       client = http.Client();
@@ -1016,7 +1013,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
 
       final total = streamed.contentLength ?? 0;
-      final sink = file.openWrite();
+      sink = stagedFile.openWrite();
       var received = 0;
       await for (final chunk in streamed.stream) {
         if (cancelled) break;
@@ -1032,10 +1029,11 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
       await sink.flush();
       await sink.close();
+      sink = null;
 
       if (cancelled) {
         try {
-          if (await file.exists()) await file.delete();
+          if (await stagedFile.exists()) await stagedFile.delete();
         } catch (_) {}
         if (mounted) {
           setState(() => _statusLine = 'دانلود لغو شد');
@@ -1043,19 +1041,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         return;
       }
 
-      final size = await file.length();
+      final size = await stagedFile.length();
       if (size < 1000) throw Exception('فایل خیلی کوچک است');
 
-      if (expectedSha256 != null) {
-        final actualSha256 = await calculateSha256(file.openRead());
-        if (!sha256Matches(expectedSha256, actualSha256)) {
-          try {
-            await file.delete();
-          } catch (_) {}
-          await _clearPendingUpdatePrefs();
-          throw StateError('SHA-256 فایل دانلودشده با مقدار اعلام‌شده مطابقت ندارد');
-        }
-      }
+      file = await promoteVerifiedApk(
+        stagedFile: stagedFile,
+        destinationFile: file,
+        expectedSha256: expectedSha256,
+      );
+      promoted = true;
 
       await _savePendingUpdate(
         path: file.path,
@@ -1066,6 +1060,22 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         url: apkUrl,
         sha256: expectedSha256,
       );
+      pendingSaved = true;
+
+      // Only after the new APK and its metadata are committed may older APKs
+      // be removed. This keeps the previous pending update through failures.
+      try {
+        await for (final entity in dir.list()) {
+          if (entity is File &&
+              entity.path != file.path &&
+              (entity.path.endsWith('.apk') ||
+                  entity.path.endsWith('.apk.part'))) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
 
       progress.value = 1;
       status.value = 'دانلود کامل شد · ${_fmtMb(size)} مگابایت';
@@ -1107,7 +1117,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       // انصراف کاربر → client.close باعث ClientException می‌شود؛ خطا نشان نده
       if (cancelled) {
         try {
-          if (file != null && await file.exists()) await file.delete();
+          await sink?.close();
+        } catch (_) {}
+        try {
+          if (stagedFile != null && await stagedFile.exists()) {
+            await stagedFile.delete();
+          }
+          if (promoted && !pendingSaved && file != null && await file.exists()) {
+            await file.delete();
+          }
         } catch (_) {}
         if (mounted) {
           try {
@@ -1117,9 +1135,14 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         }
       } else {
         try {
-          if (file != null && await file.exists()) {
-            final len = await file.length();
-            if (len < 10000) await file.delete();
+          await sink?.close();
+        } catch (_) {}
+        try {
+          if (stagedFile != null && await stagedFile.exists()) {
+            await stagedFile.delete();
+          }
+          if (promoted && !pendingSaved && file != null && await file.exists()) {
+            await file.delete();
           }
         } catch (_) {}
         if (mounted) {
