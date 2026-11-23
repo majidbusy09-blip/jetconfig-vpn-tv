@@ -39,19 +39,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/jet-tv-source
-          cp pubspec.yaml lib/main.dart patch_tv.py patch_signing.py /tmp/jet-tv-source/
+          cp pubspec.yaml patch_tv.py patch_signing.py /tmp/jet-tv-source/
+          cp -a lib /tmp/jet-tv-source/lib
+          cp -a test /tmp/jet-tv-source/test
           [ ! -f logotype.png ] || cp logotype.png /tmp/jet-tv-source/
           [ ! -f start.mp4 ] || cp start.mp4 /tmp/jet-tv-source/
           flutter create . --project-name jet_vpn_tv --org com.jetconfig.vpntv --platforms=android
           cp /tmp/jet-tv-source/pubspec.yaml .
-          mkdir -p lib
-          cp /tmp/jet-tv-source/main.dart lib/main.dart
+          # Restore every tracked app module and test after project generation.
+          rm -rf lib test
+          cp -a /tmp/jet-tv-source/lib lib
+          cp -a /tmp/jet-tv-source/test test
           cp /tmp/jet-tv-source/patch_tv.py .
           cp /tmp/jet-tv-source/patch_signing.py .
           [ ! -f /tmp/jet-tv-source/logotype.png ] || cp /tmp/jet-tv-source/logotype.png .
           [ ! -f /tmp/jet-tv-source/start.mp4 ] || cp /tmp/jet-tv-source/start.mp4 .
-          # flutter create generates a counter test that does not belong to this app.
-          rm -f test/widget_test.dart
 
       - name: Prepare optional splash assets
         run: |
@@ -77,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          flutter analyze --no-pub lib/main.dart > analyze.log 2>&1
+          flutter analyze --no-pub lib test > analyze.log 2>&1
           code=$?
           set -e
           cat analyze.log
@@ -89,13 +91,26 @@ jobs:
           infos=$(grep -cE '^[[:space:]]*info [•-]' analyze.log || true)
           echo "No analyzer errors. Existing warnings: $warnings; infos: $infos; analyzer exit code: $code."
 
-      - name: Run tests when present
+      - name: Run required app regression tests
         run: |
-          if [ -d test ] && find test -name '*_test.dart' -print -quit | grep -q .; then
-            flutter test
-          else
-            echo "No app-owned test suite is present in this repository snapshot; test step skipped."
-          fi
+          set -euo pipefail
+          required_tests=(
+            test/tv_connection_logic_test.dart
+            test/tv_pending_update_logic_test.dart
+            test/tv_profile_logic_test.dart
+            test/tv_update_download_test.dart
+            test/tv_update_integrity_test.dart
+            test/tv_update_metadata_test.dart
+          )
+          for test_file in "${required_tests[@]}"; do
+            if [ ! -s "$test_file" ]; then
+              echo "Required regression test is missing or empty: $test_file"
+              exit 1
+            fi
+          done
+          test_count=$(find test -type f -name '*_test.dart' | wc -l)
+          echo "Running $test_count app-owned test files."
+          flutter test --reporter expanded
 
       - name: Build non-release ARM64 APK
         run: flutter build apk --debug --target-platform android-arm64 --split-per-abi
