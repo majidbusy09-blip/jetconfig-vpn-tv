@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jet_vpn_tv/tv_update_download.dart';
 import 'package:jet_vpn_tv/tv_update_integrity.dart';
+import 'package:jet_vpn_tv/tv_pending_update_record.dart';
 
 void main() {
   group('Verified APK promotion', () {
@@ -102,4 +103,45 @@ void main() {
       expect(await destination.readAsBytes(), bytes);
     });
   });
+
+  group('Pending update record codec', () {
+    const record = PendingUpdateRecord(
+      path: '/updates/release.apk',
+      version: 'tv-1.0.15',
+      versionCode: 115,
+      channel: 'arm32',
+      size: 2048,
+      url: 'https://example.invalid/release.apk',
+      sha256: 'A' * 64,
+    );
+
+    test('round trips a complete record and normalizes SHA-256', () {
+      final decoded = decodePendingUpdateRecord(
+        encodePendingUpdateRecord(record),
+      );
+      expect(decoded, isNotNull);
+      expect(decoded!.path, record.path);
+      expect(decoded.versionCode, record.versionCode);
+      expect(decoded.sha256, 'a' * 64);
+    });
+
+    test('rejects malformed JSON and unsupported schema', () {
+      expect(decodePendingUpdateRecord('{broken'), isNull);
+      expect(
+        decodePendingUpdateRecord('{"schema":2}'),
+        isNull,
+      );
+    });
+
+    test('rejects incomplete records and malformed digests', () {
+      expect(
+        PendingUpdateRecord.fromJson({'schema': 1, 'path': '/x'}),
+        isNull,
+      );
+      final invalid = Map<String, Object?>.from(record.toJson())
+        ..['sha256'] = 'not-a-digest';
+      expect(PendingUpdateRecord.fromJson(invalid), isNull);
+    });
+  });
+
 }
