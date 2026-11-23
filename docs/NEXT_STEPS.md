@@ -1,9 +1,9 @@
 # JET VPN TV — Prioritized Next Steps
 
-1. Use the new read-only PR validation workflow to establish a green baseline for source analysis and an ARM64 debug APK; investigate any existing analyzer/build failures before changing app behavior.
-2. Document the connection/recovery state, server-selection rules, profile persistence, and update/install lifecycle from current source before changing them. Initial profile and update-manifest logic has been extracted without changing credential storage or download/install behavior.
-3. Pure-logic regression tests now cover connection-state parsing, server ping ranking, profile persistence serialization/parsing, update-manifest validation, and pending-update file/version decisions. Keep these tests independent of platform plugins, network, and filesystem side effects.
-4. Pending-update decision logic is now extracted and covered by pure tests, preserving the prior 1000-byte minimum, 95% expected-size threshold, missing-file cleanup, and already-installed-version cleanup. This is only a consistency heuristic: it does not verify APK signatures or cryptographic hashes, and the existing 95% threshold can accept a file smaller than the declared size. Phase A of the additive SHA-256 rollout now validates optional digest metadata; Phase B must add file hashing and revalidation without changing legacy no-digest behavior. See docs/UPDATE_ARTIFACT_INTEGRITY.md. Maintain a manual TV checklist for connection and actual traffic, remote focus/navigation, sleep/resume, profile switching, and APK update.
-5. Review the release workflow separately; it currently creates releases on pushes to `main`. Do not alter production release behavior without explicit approval.
+1. Keep the read-only PR validation workflow green for source analysis, tests, and a non-release ARM64 debug APK.
+2. Preserve the extracted pure logic for connection state, server ping ranking, profile persistence, update metadata, and pending-update decisions. Avoid unrelated refactors.
+3. Phase A and Phase B of update artifact integrity are implemented: optional SHA-256 metadata parsing, digest computation after download, persistence of the expected digest, and revalidation before a pending APK is offered or opened for installation. Legacy manifests without a digest remain accepted but unverified.
+4. Next: review the production update-manifest publishing contract and prepare a test-TV rollout plan. Do not edit or publish the production manifest without explicit approval. Only after server-side hashes are published and verified should mandatory digest policy be considered.
+5. Maintain a manual TV checklist for real traffic, remote focus/navigation, sleep/resume, profile switching, and APK update/install.
 
-Deferred: tunnel/server/authentication changes without a concrete issue; signing, package identity, version, release, tag, or deployment changes without explicit approval.
+Deferred: tunnel/server/authentication changes without a concrete issue; signing, package identity, version, release, tag, production manifest, or deployment changes without explicit approval.
