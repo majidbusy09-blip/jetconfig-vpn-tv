@@ -114,6 +114,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   bool _loggedIn = false;
   bool _obscure = true;
   bool _busyLogin = false;
+  bool _isDownloadingUpdate = false;
   String? _loginError;
 
   String? _user;
@@ -217,6 +218,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     } catch (e) {
       debugPrint('v2ray init: $e');
     }
+    await _cleanupStaleUpdateFiles();
     final prefs = await SharedPreferences.getInstance();
     final u = prefs.getString('tv_user');
     final p = prefs.getString('tv_pass');
@@ -588,6 +590,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   static const String _kUpUrl = 'tv_update_apk_url';
   static const String _kUpSha256 = 'tv_update_apk_sha256';
 
+  Future<void> _cleanupStaleUpdateFiles() async {
+    try {
+      final dir = await _updateStorageDir();
+      await cleanupStaleStagedApks(dir);
+    } catch (e) {
+      debugPrint('update temp cleanup: $e');
+    }
+  }
+
   Future<Directory> _updateStorageDir() async {
     final support = await getApplicationSupportDirectory();
     final dir = Directory('${support.path}/updates');
@@ -904,7 +915,8 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required int remoteCode,
     required String? expectedSha256,
   }) async {
-    if (!mounted) return;
+    if (!mounted || _isDownloadingUpdate) return;
+    _isDownloadingUpdate = true;
 
     final progress = ValueNotifier<double>(0);
     final status = ValueNotifier<String>('در حال آماده‌سازی…');
@@ -1174,6 +1186,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       } catch (_) {}
       progress.dispose();
       status.dispose();
+      _isDownloadingUpdate = false;
     }
   }
 
