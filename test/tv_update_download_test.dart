@@ -22,6 +22,18 @@ void main() {
       }
     });
 
+    test('startup cleanup removes only interrupted staged APK files', () async {
+      final interrupted = File('${directory.path}/interrupted.apk.part');
+      final valid = File('${directory.path}/valid.apk');
+      await interrupted.writeAsString('partial');
+      await valid.writeAsString('verified');
+
+      await cleanupStaleStagedApks(directory);
+
+      expect(await interrupted.exists(), isFalse);
+      expect(await valid.exists(), isTrue);
+    });
+
     test('promotes a correctly hashed staged APK over the old destination',
         () async {
       await destination.writeAsString('old verified APK');
