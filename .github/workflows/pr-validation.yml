@@ -50,6 +50,8 @@ jobs:
           cp /tmp/jet-tv-source/patch_signing.py .
           [ ! -f /tmp/jet-tv-source/logotype.png ] || cp /tmp/jet-tv-source/logotype.png .
           [ ! -f /tmp/jet-tv-source/start.mp4 ] || cp /tmp/jet-tv-source/start.mp4 .
+          # flutter create generates a counter test that does not belong to this app.
+          rm -f test/widget_test.dart
 
       - name: Prepare optional splash assets
         run: |
@@ -83,14 +85,16 @@ jobs:
             echo "Flutter analyzer reported error-level diagnostics."
             exit 1
           fi
-          echo "No error-level analyzer diagnostics. Analyzer exit code: $code (pre-existing infos/warnings may be present)."
+          warnings=$(grep -cE '^[[:space:]]*warning [•-]' analyze.log || true)
+          infos=$(grep -cE '^[[:space:]]*info [•-]' analyze.log || true)
+          echo "No analyzer errors. Existing warnings: $warnings; infos: $infos; analyzer exit code: $code."
 
       - name: Run tests when present
         run: |
           if [ -d test ] && find test -name '*_test.dart' -print -quit | grep -q .; then
             flutter test
           else
-            echo "No tracked test suite is present in this repository snapshot; test step skipped."
+            echo "No app-owned test suite is present in this repository snapshot; test step skipped."
           fi
 
       - name: Build non-release ARM64 APK
