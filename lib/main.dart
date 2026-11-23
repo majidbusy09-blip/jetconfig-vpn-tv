@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'tv_connection_logic.dart';
 import 'tv_profile_logic.dart';
+import 'tv_update_metadata.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -751,26 +752,18 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         }
         return;
       }
-      final data = json.decode(res.body);
-      if (data is! Map) return;
-      final enabled = data['enabled'] == true;
+      final decoded = json.decode(res.body);
+      final metadata = parseTvUpdateMetadata(decoded);
+      if (metadata == null) return;
+
+      final enabled = metadata.enabled;
       if (!enabled && silent) return;
 
-      final remoteCode =
-          int.tryParse('${data['version_code'] ?? data['versionCode'] ?? 0}') ??
-              0;
-      final remoteVer = '${data['version'] ?? ''}';
-      final title = '${data['title'] ?? 'نسخه جدید JET TV'}';
-      final changelog = '${data['changelog'] ?? ''}';
-      final urls = data['urls'];
-      String apk = '';
-      if (urls is Map) {
-        apk =
-            '${urls['arm32'] ?? urls['armeabi-v7a'] ?? urls['arm64'] ?? urls['universal'] ?? ''}';
-      }
-      if (apk.isEmpty) {
-        apk = '${data['apk_arm32'] ?? data['apk_arm64'] ?? data['apk'] ?? ''}';
-      }
+      final remoteCode = metadata.versionCode;
+      final remoteVer = metadata.version;
+      final title = metadata.title;
+      final changelog = metadata.changelog;
+      final apk = metadata.apkUrl ?? '';
 
       // pending با همان version_code
       if (pending != null && (pending['version_code'] as int) == remoteCode) {
@@ -810,7 +803,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         return;
       }
       if (!mounted) return;
-      final force = data['force'] == true;
+      final force = metadata.force;
 
       await showDialog<void>(
         context: context,
