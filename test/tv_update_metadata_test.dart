@@ -22,6 +22,7 @@ void main() {
       expect(result.changelog, 'رفع اشکال');
       expect(result.force, isTrue);
       expect(result.apkUrl, 'https://example.com/tv.apk');
+      expect(result.sha256, isNull);
     });
 
     test('supports legacy versionCode and APK URL aliases', () {
@@ -104,6 +105,49 @@ void main() {
       expect(result.title, 'نسخه جدید JET TV');
       expect(result.changelog, '');
       expect(result.apkUrl, isNull);
+      expect(result.sha256, isNull);
+    });
+
+    test('accepts a valid SHA-256 digest and normalizes it to lowercase', () {
+      final digest = 'A' * 64;
+      final result = parseTvUpdateMetadata({
+        'version_code': 121,
+        'version': 'tv-1.0.21',
+        'sha256': digest,
+      });
+
+      expect(result, isNotNull);
+      expect(result!.sha256, 'a' * 64);
+    });
+
+    test('preserves legacy behavior when SHA-256 is missing or null', () {
+      for (final manifest in [
+        {'version_code': 122, 'version': 'tv-1.0.22'},
+        {'version_code': 123, 'version': 'tv-1.0.23', 'sha256': null},
+      ]) {
+        final result = parseTvUpdateMetadata(manifest);
+        expect(result, isNotNull);
+        expect(result!.sha256, isNull);
+      }
+    });
+
+    test('rejects malformed present SHA-256 metadata', () {
+      for (final digest in [
+        '',
+        'a' * 63,
+        'a' * 65,
+        'g' * 64,
+        'a' * 63 + ' ',
+        123,
+        true,
+      ]) {
+        final result = parseTvUpdateMetadata({
+          'version_code': 124,
+          'version': 'tv-1.0.24',
+          'sha256': digest,
+        });
+        expect(result, isNull, reason: '$digest');
+      }
     });
   });
 }
