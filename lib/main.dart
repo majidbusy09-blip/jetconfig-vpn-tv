@@ -8,6 +8,7 @@ import 'tv_connection_logic.dart';
 import 'tv_profile_logic.dart';
 import 'tv_update_metadata.dart';
 import 'tv_pending_update_logic.dart';
+import 'tv_update_integrity.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -584,6 +585,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   static const String _kUpChannel = 'tv_update_apk_channel';
   static const String _kUpSize = 'tv_update_apk_size';
   static const String _kUpUrl = 'tv_update_apk_url';
+  static const String _kUpSha256 = 'tv_update_apk_sha256';
 
   Future<Directory> _updateStorageDir() async {
     final support = await getApplicationSupportDirectory();
@@ -602,6 +604,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     await prefs.remove(_kUpChannel);
     await prefs.remove(_kUpSize);
     await prefs.remove(_kUpUrl);
+    await prefs.remove(_kUpSha256);
   }
 
   Future<void> _savePendingUpdate({
@@ -611,6 +614,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required String channel,
     required int size,
     required String url,
+    required String? sha256,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kUpPath, path);
@@ -619,6 +623,11 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     await prefs.setString(_kUpChannel, channel);
     await prefs.setInt(_kUpSize, size);
     await prefs.setString(_kUpUrl, url);
+    if (sha256 == null) {
+      await prefs.remove(_kUpSha256);
+    } else {
+      await prefs.setString(_kUpSha256, sha256);
+    }
   }
 
   Future<Map<String, dynamic>?> _loadPendingUpdate() async {
@@ -648,6 +657,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
       return null;
     }
+    final expectedSha256 = prefs.getString(_kUpSha256);
+    if (expectedSha256 != null) {
+      final actualSha256 = await calculateSha256(f.openRead());
+      if (!sha256Matches(expectedSha256, actualSha256)) {
+        try {
+          await f.delete();
+        } catch (_) {}
+        await _clearPendingUpdatePrefs();
+        return null;
+      }
+    }
     final code = prefs.getInt(_kUpCode) ?? 0;
     return {
       'path': path,
@@ -656,6 +676,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       'channel': prefs.getString(_kUpChannel) ?? kApkChannel,
       'size': len,
       'url': prefs.getString(_kUpUrl) ?? '',
+      'sha256': expectedSha256,
     };
   }
 
@@ -677,6 +698,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
     final short = s.length > 120 ? '${s.substring(0, 120)}…' : s;
     return 'دانلود ناموفق بود.\n$short';
+  }
+
+  Future<void> _installVerifiedPendingUpdate(String expectedPath) async {
+    final pending = await _loadPendingUpdate();
+    if (pending == null || pending['path'] != expectedPath) {
+      if (mounted) {
+        setState(() => _statusLine = 'فایل بروزرسانی معتبر نیست؛ دوباره دانلود کنید');
+      }
+      return;
+    }
+    await _installApkFile(expectedPath);
   }
 
   Future<void> _installApkFile(String path) async {
@@ -736,7 +768,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
               TextButton(
                 onPressed: () async {
                   Navigator.pop(ctx);
-                  await _installApkFile(pending['path'] as String);
+                  await _installVerifiedPendingUpdate(pending['path'] as String);
                 },
                 child: const Text('نصب', style: TextStyle(color: kCyan)),
               ),
@@ -834,6 +866,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
                         apkUrl: apk,
                         remoteVer: remoteVer,
                         remoteCode: remoteCode,
+                        expectedSha256: metadata.sha256,
                       );
                     },
               child: const Text('دانلود و نصب',
@@ -865,6 +898,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required String apkUrl,
     required String remoteVer,
     required int remoteCode,
+    required String? expectedSha256,
   }) async {
     if (!mounted) return;
 
@@ -1012,6 +1046,17 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       final size = await file.length();
       if (size < 1000) throw Exception('فایل خیلی کوچک است');
 
+      if (expectedSha256 != null) {
+        final actualSha256 = await calculateSha256(file.openRead());
+        if (!sha256Matches(expectedSha256, actualSha256)) {
+          try {
+            await file.delete();
+          } catch (_) {}
+          await _clearPendingUpdatePrefs();
+          throw StateError('SHA-256 فایل دانلودشده با مقدار اعلام‌شده مطابقت ندارد');
+        }
+      }
+
       await _savePendingUpdate(
         path: file.path,
         version: remoteVer,
@@ -1019,6 +1064,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         channel: kApkChannel,
         size: size,
         url: apkUrl,
+        sha256: expectedSha256,
       );
 
       progress.value = 1;
@@ -1047,7 +1093,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
               TextButton(
                 onPressed: () async {
                   Navigator.pop(ctx);
-                  await _installApkFile(file!.path);
+                  await _installVerifiedPendingUpdate(file!.path);
                 },
                 child: const Text('نصب الان',
                     style: TextStyle(color: kCyan)),
