@@ -39,8 +39,8 @@ void main() {
     });
 
     test('preserves the existing 95 percent expected-size threshold', () {
-      final below = evaluate(actualSize: 949, expectedSize: 1000);
-      final boundary = evaluate(actualSize: 950, expectedSize: 1000);
+      final below = evaluate(actualSize: 1899, expectedSize: 2000);
+      final boundary = evaluate(actualSize: 1900, expectedSize: 2000);
       expect(below.action, PendingUpdateAction.deleteFileAndClearPreferences);
       expect(boundary.action, PendingUpdateAction.none);
       expect(boundary.isUsable, isTrue);
