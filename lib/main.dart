@@ -271,7 +271,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     if (!mounted) return;
     final prev = (_coreState ?? '').toUpperCase();
     _coreState = status.state;
-    final st = (status.state ?? '').toUpperCase();
+    final st = status.state.toUpperCase();
 
     // هنگام تعویض عمدی سرور، DISCONNECT را نادیده بگیر تا حلقه بازیابی ساخته نشود
     if (_switchingServers) return;
