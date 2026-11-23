@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'tv_connection_logic.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -252,24 +253,11 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
-  bool _statusMeansConnected(String? state) {
-    final s = (state ?? '').toUpperCase().trim();
-    if (s.isEmpty) return false;
-    if (s.contains('DISCONNECT')) return false;
-    if (s == 'CONNECTED') return true;
-    // بعضی بیلدها فقط CONNECT می‌فرستند
-    if (s == 'CONNECT') return true;
-    return false;
-  }
+  bool _statusMeansConnected(String? state) =>
+      statusMeansConnected(state);
 
-  bool _statusMeansDisconnected(String? state) {
-    final s = (state ?? '').toUpperCase().trim();
-    return s.contains('DISCONNECT') ||
-        s == 'IDLE' ||
-        s == 'STOPPED' ||
-        s == 'NONE' ||
-        s == 'DISCONNECTED';
-  }
+  bool _statusMeansDisconnected(String? state) =>
+      statusMeansDisconnected(state);
 
   void _onStatus(V2RayStatus status) {
     if (!mounted) return;
@@ -1580,15 +1568,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     }
 
     // امتیاز: پینگ واقعی؛ زیر ۳۰ms مشکوک
-    _servers.sort((a, b) {
-      int score(TvServer s) {
-        if (s.ping <= 0) return 999999;
-        if (s.ping < 30) return 5000 + s.ping;
-        return s.ping;
-      }
-
-      return score(a).compareTo(score(b));
-    });
+    _servers.sort((a, b) => compareServerPing(a.ping, b.ping));
     if (mounted) setState(() {});
   }
 
