@@ -18,7 +18,7 @@ These checks detect some incomplete/stale files. They do **not** establish APK a
 
 ## Rollout sequence
 
-- Phase A: add pure digest-format parsing and hash-comparison tests, with no change to existing manifest compatibility.
+- Phase A: implemented in this PR as pure optional SHA-256 metadata parsing and format-validation tests. Missing/null values remain legacy-compatible; malformed present values reject the manifest. No download, persistence, or install behavior changes.
 - Phase B: calculate the digest after download, persist it, and re-check pending files before offering installation.
 - Phase C: publish matching hashes in the server manifest and verify a real update on a test TV.
 - Phase D: only after the server-side rollout is confirmed, consider making the digest mandatory. Do not silently flip this requirement in a client-only release.
