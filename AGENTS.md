@@ -17,4 +17,4 @@
 ## Architecture
 - Flutter Android TV / Google TV app; implementation concentrated in `lib/main.dart`.
 - `patch_tv.py` patches the generated Android project; `patch_signing.py` handles release signing setup.
-- No tracked `test/` directory exists in the inspected baseline; the PR workflow skips tests when none exist.
+- `test/tv_connection_logic_test.dart` covers pure connection-status parsing and server ping ranking. The PR workflow runs app-owned tests when present. Keep tests independent of plugin/device APIs wherever possible; do not claim this proves tunnel traffic or TV-device behavior.
