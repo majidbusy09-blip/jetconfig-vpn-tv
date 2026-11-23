@@ -10,6 +10,7 @@ import 'tv_update_metadata.dart';
 import 'tv_pending_update_logic.dart';
 import 'tv_update_integrity.dart';
 import 'tv_update_download.dart';
+import 'tv_pending_update_record.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -589,6 +590,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
   static const String _kUpSize = 'tv_update_apk_size';
   static const String _kUpUrl = 'tv_update_apk_url';
   static const String _kUpSha256 = 'tv_update_apk_sha256';
+  static const String _kUpRecord = 'tv_update_pending_record_v1';
 
   Future<void> _cleanupStaleUpdateFiles() async {
     try {
@@ -610,6 +612,7 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   Future<void> _clearPendingUpdatePrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kUpRecord);
     await prefs.remove(_kUpPath);
     await prefs.remove(_kUpVer);
     await prefs.remove(_kUpCode);
@@ -629,35 +632,60 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     required String? sha256,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    // The path is the commit marker: write it last so an interrupted metadata
-    // save cannot expose a partially populated pending-update record.
-    await prefs.remove(_kUpPath);
-    await prefs.setString(_kUpVer, version);
-    await prefs.setInt(_kUpCode, versionCode);
-    await prefs.setString(_kUpChannel, channel);
-    await prefs.setInt(_kUpSize, size);
-    await prefs.setString(_kUpUrl, url);
-    if (sha256 == null) {
-      await prefs.remove(_kUpSha256);
-    } else {
-      await prefs.setString(_kUpSha256, sha256);
+    final record = PendingUpdateRecord(
+      path: path,
+      version: version,
+      versionCode: versionCode,
+      channel: channel,
+      size: size,
+      url: url,
+      sha256: sha256,
+    );
+    // One preference value is the commit point; old-format keys are removed
+    // only after the complete new record has been persisted successfully.
+    final saved = await prefs.setString(
+      _kUpRecord,
+      encodePendingUpdateRecord(record),
+    );
+    if (!saved) {
+      throw StateError('Could not persist pending update metadata');
     }
-    await prefs.setString(_kUpPath, path);
+    await prefs.remove(_kUpPath);
+    await prefs.remove(_kUpVer);
+    await prefs.remove(_kUpCode);
+    await prefs.remove(_kUpChannel);
+    await prefs.remove(_kUpSize);
+    await prefs.remove(_kUpUrl);
+    await prefs.remove(_kUpSha256);
   }
 
   Future<Map<String, dynamic>?> _loadPendingUpdate() async {
     final prefs = await SharedPreferences.getInstance();
-    final path = prefs.getString(_kUpPath);
+    final rawRecord = prefs.getString(_kUpRecord);
+    final record = rawRecord == null
+        ? null
+        : decodePendingUpdateRecord(rawRecord);
+    if (rawRecord != null && record == null) {
+      // A corrupt new-format record must never fall through to stale legacy
+      // fields and accidentally associate them with a different APK.
+      await _clearPendingUpdatePrefs();
+      return null;
+    }
+
+    // Read the previous multi-key format only when no new-format record exists.
+    final path = record?.path ?? prefs.getString(_kUpPath);
     if (path == null || path.isEmpty) return null;
     final f = File(path);
     final exists = await f.exists();
     final len = exists ? await f.length() : 0;
+    final expectedSize = record?.size ?? prefs.getInt(_kUpSize) ?? 0;
+    final versionCode = record?.versionCode ?? prefs.getInt(_kUpCode) ?? 0;
     final decision = evaluatePendingUpdate(
       hasPath: true,
       fileExists: exists,
       actualSize: len,
-      expectedSize: prefs.getInt(_kUpSize) ?? 0,
-      pendingVersionCode: prefs.getInt(_kUpCode) ?? 0,
+      expectedSize: expectedSize,
+      pendingVersionCode: versionCode,
       currentVersionCode: kVersionCode,
     );
     if (!decision.isUsable) {
@@ -672,7 +700,8 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       }
       return null;
     }
-    final expectedSha256 = prefs.getString(_kUpSha256);
+    final expectedSha256 =
+        record?.sha256 ?? prefs.getString(_kUpSha256);
     if (expectedSha256 != null) {
       final actualSha256 = await calculateSha256(f.openRead());
       if (!sha256Matches(expectedSha256, actualSha256)) {
@@ -683,14 +712,15 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
         return null;
       }
     }
-    final code = prefs.getInt(_kUpCode) ?? 0;
     return {
       'path': path,
-      'version': prefs.getString(_kUpVer) ?? '',
-      'version_code': code,
-      'channel': prefs.getString(_kUpChannel) ?? kApkChannel,
+      'version': record?.version ?? prefs.getString(_kUpVer) ?? '',
+      'version_code': versionCode,
+      'channel': record?.channel ??
+          prefs.getString(_kUpChannel) ??
+          kApkChannel,
       'size': len,
-      'url': prefs.getString(_kUpUrl) ?? '',
+      'url': record?.url ?? prefs.getString(_kUpUrl) ?? '',
       'sha256': expectedSha256,
     };
   }
