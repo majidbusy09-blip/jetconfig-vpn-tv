@@ -27,9 +27,6 @@ void main() {
       await destination.writeAsString('old verified APK');
       final bytes = List<int>.generate(2048, (index) => index % 251);
       await staged.writeAsBytes(bytes);
-      const expectedSha256 =
-          'e2c865db4162bed963bfaa9ef6ac18f0c6a5e4f0a6f7f4e8f5b8c9e4f3f5d7a1';
-
       // Use the known digest of the actual test payload rather than a fixture
       // literal, then verify the promotion path end to end.
       final digest = await calculateSha256(staged.openRead());
@@ -42,7 +39,6 @@ void main() {
       expect(promoted.path, destination.path);
       expect(await destination.readAsBytes(), bytes);
       expect(await staged.exists(), isFalse);
-      expect(expectedSha256, hasLength(64));
     });
 
     test('keeps the existing destination when digest verification fails',
