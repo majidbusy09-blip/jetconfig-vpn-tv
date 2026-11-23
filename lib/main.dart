@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'tv_connection_logic.dart';
+import 'tv_profile_logic.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -353,40 +354,13 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
 
   Future<void> _upsertProfile(SharedPreferences prefs, String u, String p) async {
     final raw = prefs.getString('tv_profiles') ?? '[]';
-    List list;
-    try {
-      list = json.decode(raw) as List;
-    } catch (_) {
-      list = [];
-    }
-    final filtered = list
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .where((e) => '${e['u']}' != u)
-        .toList();
-    filtered.insert(0, {'u': u, 'p': p});
-    if (filtered.length > 12) {
-      filtered.removeRange(12, filtered.length);
-    }
-    await prefs.setString('tv_profiles', json.encode(filtered));
+    await prefs.setString('tv_profiles', upsertProfileJson(raw, u, p));
   }
 
   Future<List<Map<String, String>>> _loadProfiles() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('tv_profiles') ?? '[]';
-    try {
-      final list = json.decode(raw) as List;
-      return list
-          .whereType<Map>()
-          .map((e) => {
-                'u': '${e['u'] ?? ''}',
-                'p': '${e['p'] ?? ''}',
-              })
-          .where((e) => e['u']!.isNotEmpty)
-          .toList();
-    } catch (_) {
-      return [];
-    }
+    return loadProfilesFromJson(raw);
   }
 
   Future<void> _switchProfile(String u, String p) async {
