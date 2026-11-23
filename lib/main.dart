@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'tv_connection_logic.dart';
 import 'tv_profile_logic.dart';
 import 'tv_update_metadata.dart';
+import 'tv_pending_update_logic.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -625,27 +626,29 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
     final path = prefs.getString(_kUpPath);
     if (path == null || path.isEmpty) return null;
     final f = File(path);
-    if (!await f.exists()) {
-      await _clearPendingUpdatePrefs();
-      return null;
-    }
-    final len = await f.length();
-    final expected = prefs.getInt(_kUpSize) ?? 0;
-    if (len < 1000 || (expected > 0 && len < expected * 0.95)) {
-      try {
-        await f.delete();
-      } catch (_) {}
-      await _clearPendingUpdatePrefs();
+    final exists = await f.exists();
+    final len = exists ? await f.length() : 0;
+    final decision = evaluatePendingUpdate(
+      hasPath: true,
+      fileExists: exists,
+      actualSize: len,
+      expectedSize: prefs.getInt(_kUpSize) ?? 0,
+      pendingVersionCode: prefs.getInt(_kUpCode) ?? 0,
+      currentVersionCode: kVersionCode,
+    );
+    if (!decision.isUsable) {
+      if (decision.action ==
+          PendingUpdateAction.deleteFileAndClearPreferences) {
+        try {
+          await f.delete();
+        } catch (_) {}
+      }
+      if (decision.action != PendingUpdateAction.none) {
+        await _clearPendingUpdatePrefs();
+      }
       return null;
     }
     final code = prefs.getInt(_kUpCode) ?? 0;
-    if (code > 0 && kVersionCode >= code) {
-      try {
-        await f.delete();
-      } catch (_) {}
-      await _clearPendingUpdatePrefs();
-      return null;
-    }
     return {
       'path': path,
       'version': prefs.getString(_kUpVer) ?? '',
