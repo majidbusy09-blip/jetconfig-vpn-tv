@@ -644,22 +644,27 @@ class _TvRootState extends State<TvRoot> with SingleTickerProviderStateMixin {
       url: url,
       sha256: sha256,
     );
-    // One preference value is the commit point; old-format keys are removed
-    // only after the complete new record has been persisted successfully.
-    final saved = await prefs.setString(
-      _kUpRecord,
-      encodePendingUpdateRecord(record),
+    // Persisting the new record is the commit point. Legacy-key cleanup is
+    // best-effort and must never invalidate a successfully committed APK.
+    await persistPendingUpdateRecord(
+      writeRecord: () => prefs.setString(
+        _kUpRecord,
+        encodePendingUpdateRecord(record),
+      ),
+      legacyKeys: const [
+        _kUpPath,
+        _kUpVer,
+        _kUpCode,
+        _kUpChannel,
+        _kUpSize,
+        _kUpUrl,
+        _kUpSha256,
+      ],
+      removeLegacyKey: prefs.remove,
+      onCleanupError: (key, error, stackTrace) {
+        debugPrint('pending update legacy-key cleanup failed ($key): $error');
+      },
     );
-    if (!saved) {
-      throw StateError('Could not persist pending update metadata');
-    }
-    await prefs.remove(_kUpPath);
-    await prefs.remove(_kUpVer);
-    await prefs.remove(_kUpCode);
-    await prefs.remove(_kUpChannel);
-    await prefs.remove(_kUpSize);
-    await prefs.remove(_kUpUrl);
-    await prefs.remove(_kUpSha256);
   }
 
   Future<Map<String, dynamic>?> _loadPendingUpdate() async {

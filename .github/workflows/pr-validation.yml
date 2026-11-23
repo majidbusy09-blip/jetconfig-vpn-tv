@@ -101,6 +101,7 @@ jobs:
             test/tv_update_download_test.dart
             test/tv_update_integrity_test.dart
             test/tv_update_metadata_test.dart
+            test/tv_pending_update_record_persistence_test.dart
           )
           for test_file in "${required_tests[@]}"; do
             if [ ! -s "$test_file" ]; then

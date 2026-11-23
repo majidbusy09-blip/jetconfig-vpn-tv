@@ -76,3 +76,32 @@ PendingUpdateRecord? decodePendingUpdateRecord(String raw) {
     return null;
   }
 }
+
+/// Persists the new pending-update record before best-effort legacy cleanup.
+///
+/// A successful [writeRecord] is the commit point. Cleanup failures are
+/// reported but never propagated, so callers do not discard the committed APK.
+Future<void> persistPendingUpdateRecord({
+  required Future<bool> Function() writeRecord,
+  required List<String> legacyKeys,
+  required Future<bool> Function(String key) removeLegacyKey,
+  void Function(String key, Object error, StackTrace stackTrace)?
+      onCleanupError,
+}) async {
+  final saved = await writeRecord();
+  if (!saved) {
+    throw StateError('Could not persist pending update metadata');
+  }
+
+  for (final key in legacyKeys) {
+    try {
+      await removeLegacyKey(key);
+    } catch (error, stackTrace) {
+      try {
+        onCleanupError?.call(key, error, stackTrace);
+      } catch (_) {
+        // Diagnostic callbacks must not invalidate the committed record.
+      }
+    }
+  }
+}
